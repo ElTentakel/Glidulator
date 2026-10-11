@@ -1,0 +1,16 @@
+# Key sequence for the demo "Nature" (Vertigo, 1997), see run_nature.sh.
+# Text menu: [2] configure, then 4x (y/n): stereo, gamma, widescreen,
+# loop -> n; blit driver 1 = 3DFX; resolution 1 = 320x240; sound off: y.
+wait 4
+key 2
+wait 1
+key n n n n
+wait 0.5
+key 1
+wait 0.5
+key 1
+wait 0.5
+key y
+wait 1
+# loading (~40 s progress bar via grLfbWriteRegion), then 3D scenes
+shots frame 30 3

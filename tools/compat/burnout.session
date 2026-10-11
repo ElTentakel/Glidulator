@@ -1,0 +1,3 @@
+# Burnout (3Dfx demo): intro/title, then the 3D menu at the race track
+wait 3
+shots frame 24 5

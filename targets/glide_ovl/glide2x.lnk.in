@@ -1,0 +1,12 @@
+# wlink script for GLIDE2X.OVL (DOS/4G LE DLL). Structure taken from
+# ranulphus/MGA-Glide (mk/glide2x.lnk.in, MIT), see tools/abi/ATTRIBUTION.md.
+format os2 le dll initglobal
+option modname=glide2x
+option start=__DLLstart_
+option nocaseexact
+option nodefaultlibs
+option quiet
+libpath @WATCOM@/lib386
+libpath @WATCOM@/lib386/dos
+library clib3s.lib
+library math387s.lib

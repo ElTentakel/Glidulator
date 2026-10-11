@@ -1,0 +1,6 @@
+wait 9
+key Down Down Down Down Down Down Down Down Down Down Down Down
+wait 0.5
+key Return
+wait 2
+shots frame 30 6

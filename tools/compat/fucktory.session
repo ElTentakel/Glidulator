@@ -1,0 +1,4 @@
+wait 4
+key Return
+wait 2
+shots frame 30 6

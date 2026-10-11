@@ -1,0 +1,43 @@
+/* Version information of glide2x.dll (Explorer: Properties > Version). */
+
+#include <winver.h>
+#include "glidulator/version.h"
+
+#define VER_NUM GLIDULATOR_VERSION_MAJOR, GLIDULATOR_VERSION_MINOR, GLIDULATOR_VERSION_PATCH, 0
+
+#if defined(GLIDULATOR_DEBUG)
+#    define GLIDULATOR_VARIANT "(debug)"
+#elif defined(GLIDULATOR_TRACE)
+#    define GLIDULATOR_VARIANT "(trace)"
+#else
+#    define GLIDULATOR_VARIANT "(release)"
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     VER_NUM
+PRODUCTVERSION  VER_NUM
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "ElTentakel Graphics Systems"
+            VALUE "FileDescription",  "Glidulator GL-1 (Glide 2.x software renderer)"
+            VALUE "FileVersion",      GLIDULATOR_VERSION " " GLIDULATOR_VARIANT
+            VALUE "InternalName",     "glide2x"
+            VALUE "LegalCopyright",   "GNU GPL v2 or later"
+            VALUE "OriginalFilename", "glide2x.dll"
+            VALUE "ProductName",      "Glidulator GL-1"
+            VALUE "ProductVersion",   GLIDULATOR_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

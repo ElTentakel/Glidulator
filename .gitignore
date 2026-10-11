@@ -1,0 +1,8 @@
+/build/
+__pycache__/
+
+# release subrepository (own git repository)
+/release/
+
+# disk images for local tests (not versioned)
+*.img

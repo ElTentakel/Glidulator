@@ -1,0 +1,20 @@
+# Archimedean Dynasty (3Dfx demo): mouse-driven. AD3DFX checks Glide
+# (grSstWinOpen/grGlideShutdown), then shows VESA menus. Mouse positions are
+# fractions of the window; the game sets its own mouse ranges (DOS mouse
+# functions 7/8), so the values differ from the screen fractions.
+wait 12
+# info page: "Continue with legal stuff"
+mouseto 0.70 0.825
+wait 1
+click
+wait 4
+# license: "Continue", then "I agree"
+mouseto 0.81 0.82
+wait 1
+click
+wait 4
+click
+wait 25
+# Main menu reached. "Instant Action" (starts FIGHT3 = Glide) is not hit
+# automatically yet: the mouse range changes again there.
+shots frame 6 5

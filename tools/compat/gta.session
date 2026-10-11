@@ -1,0 +1,13 @@
+# GTA (3Dfx demo): main menu Play, character, city -> Enter each
+wait 8
+key Return
+wait 3
+key Return
+wait 3
+key Return
+wait 3
+key Return
+wait 5
+# walk/drive a little
+key Up Up Up Up Up Up Left Left Up Up Up Up
+shots frame 20 5

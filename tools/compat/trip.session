@@ -1,0 +1,13 @@
+wait 3
+key 3
+key Return
+wait 2
+key 0
+key Return
+wait 2
+key 0
+key Return
+wait 2
+shot menu4
+shots early 4 2
+shots frame 20 6
