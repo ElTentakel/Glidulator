@@ -131,7 +131,7 @@ maintainer's internal repository only.
 
 ```
 abi/            clean-room Glide 2.x API description (MIT, MGA-Glide)
-core/           portable implementation; core/rasterizer/ = 86Box port
+core/           portable implementation; core/rasterizer/ = PCem/86Box port
 platform/       dos_ovl, win98, linux, dos
 targets/        glide_ovl, glide_dll, glide_test_linux, glide_replay, test programs
 tests/          unit tests, golden images

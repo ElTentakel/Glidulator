@@ -68,7 +68,7 @@ REPORTING PROBLEMS
 LICENSE AND SOURCE
   Glidulator is free software under the GNU General Public License,
   version 2 or later (COPYING.TXT). Source code, documentation and
-  credits (86Box rasterizer, MGA-Glide ABI description):
+  credits (PCem/86Box rasterizer, MGA-Glide ABI description):
   https://github.com/ElTentakel/Glidulator
 
   No tentacles were harmed in the making of this software.

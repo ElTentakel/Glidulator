@@ -17,7 +17,7 @@ targets/glide_ovl (DOS, GLIDE2X.OVL)      targets/glide_dll (Windows, glide2x.dl
 core/                                      portable, no OS knowledge
   glide_*.c       Glide API -> Voodoo registers ("register driver")
   render_mt.c     triangle queue for render workers
-  rasterizer/     Voodoo Graphics rasterizer and texture unit (86Box), x86 JIT
+  rasterizer/     Voodoo Graphics rasterizer and texture unit (PCem/86Box), x86 JIT
   fsaa.c          sub-pixel planes, resolve, edge smoothing
   vfilter.c       Voodoo video output filter
   osd.c           output timing, on-screen display
@@ -50,7 +50,8 @@ system-specific goes through `platform.h`:
   setup unit would: start values and gradients of colour, Z, W and S/T/W
   as plane equations in the chip's fixed-point formats.
 - **The rasterizer** evaluates these registers exactly like the hardware.
-  It was ported from 86Box, which emulates the chip register-accurately.
+  It was written by Sarah Walker for PCem and ported from 86Box, which
+  emulates the chip register-accurately.
 
 This makes behaviour questions answerable by reference: what does 3dfx's
 Glide 2.x source write, and what does the chip do with it. The 3dfx source

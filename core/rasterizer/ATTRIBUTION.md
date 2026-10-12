@@ -1,19 +1,21 @@
 # Attribution: Voodoo rasterizer
 
+The Voodoo emulation this rasterizer is based on was written by Sarah Walker
+for [PCem](https://pcem-emulator.co.uk/) and further developed in 86Box.
 The files `vid_voodoo_*.c/h` and `vid_voodoo_dither.h` in this directory are
 ported from [86Box](https://github.com/86Box/86Box) (`src/video/
 vid_voodoo_render.c`, `vid_voodoo_texture.c` and their headers, `master` of
 2026-10-05; the x86 code generator `vid_voodoo_codegen_x86.h` from `master`
 of 2026-10-08).
 
-- Copyright 2008-2020 Sarah Walker and the 86Box contributors (see file
-  headers).
+- Copyright 2008-2020 Sarah Walker (PCem) and the 86Box contributors (see
+  file headers).
 - License: GNU GPL, version 2 or later. Glidulator is distributed under the
   same terms.
 
 The Voodoo video output filter in `core/vfilter.c` re-implements
 `voodoo_generate_filter_v1`/`voodoo_filterline_v1` from 86Box's
-`vid_voodoo_display.c` (same authors and license).
+`vid_voodoo_display.c` (originally from PCem; same authors and license).
 
 ## Changes against 86Box
 
