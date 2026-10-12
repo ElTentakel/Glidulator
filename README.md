@@ -1,5 +1,3 @@
-<p align="center"><img src="docs/assets/logo.svg" alt="ElTentakel Graphics Systems" width="640"></p>
-
 # Glidulator GL-1
 **The Voodoo-compatible 3D accelerator that fits in a single file.**
 No add-in board. No pass-through cable. No jumpers. Every core a tentacle.
@@ -131,8 +129,8 @@ Glidulator is free software under the **GNU General Public License,
 version 2 or later** (see `COPYING`), as required by the rasterizer it is
 built on. It stands on the shoulders of:
 
-- **86Box** (Sarah Walker and contributors, GPL): Voodoo rasterizer,
-  texture unit, x86 JIT and video filter. See
+- **PCem** (Sarah Walker), as further developed in **86Box** (86Box contributors), GPL:
+  Voodoo rasterizer, texture unit, x86 JIT and video filter. See
   [core/rasterizer/ATTRIBUTION.md](core/rasterizer/ATTRIBUTION.md).
 - **MGA-Glide** (ranulphus, MIT): clean-room Glide 2.x ABI description and
   the LE loader used in tests. See [abi/ATTRIBUTION.md](abi/ATTRIBUTION.md)
