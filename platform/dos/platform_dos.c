@@ -96,6 +96,10 @@ int platform_display_lost(void) {
     return 0;
 }
 
+int platform_screenshot_key(void) {
+    return 0;
+}
+
 void platform_prepare_window(void) {
 }
 

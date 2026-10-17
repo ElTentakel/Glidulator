@@ -11,8 +11,8 @@
  *
  * APs live only while workers exist: platform_spawn_worker() starts them
  * (with the first worker), the last platform_join_worker() sends INIT
- * again, after which they wait for a SIPI as after the BIOS, and the
- * trampoline's DOS memory is freed. Nothing remains resident. The core
+ * again and parks them in a hlt loop of the BIOS ROM (park_in_rom), and
+ * the trampoline's DOS memory is freed. Nothing remains resident. The core
  * count (platform_core_count) is determined once by such a start/stop
  * (~70 ms).
  *
@@ -138,6 +138,10 @@ static void cpu_pause(void);
 #pragma aux cpu_pause = 0xf3 0x90;
 static void set_cr3(unsigned v);
 #pragma aux set_cr3 = 0x0f 0x22 0xd8 parm [eax]; /* mov cr3, eax */
+static unsigned flags_cli(void);
+#pragma aux flags_cli = "pushfd" "pop eax" "cli" value [eax];
+static void flags_restore(unsigned f);
+#pragma aux flags_restore = "push eax" "popfd" parm [eax];
 /* Windows in enhanced mode (3.1, 9x): INT 2Fh 160Ah returns AX 0 and
  * CX 3. Not 1600h alone: VDPMI answers that like Windows 4.0 (AL 4), but
  * 160Ah with CX 2 (standard mode). Returns CX, or 0 if unsupported. */
@@ -178,6 +182,10 @@ static void dos_free(unsigned sel);
 #define CR4_OSFXSR   0x200u
 #define MSR_APICBASE 0x1b
 #define MSR_X2_ICR   0x830
+#define APIC_EN      0x800u /* MSR 1Bh: global enable */
+#define APIC_SVR     0x0f0
+#define APIC_LVT0    0x350
+#define APIC_LVT1    0x360
 #define ICR_LO       0x300
 #define ICR_HI       0x310
 #define ICR_PENDING  0x1000u
@@ -464,6 +472,49 @@ static int check_ring3(int want) {
     return 1;
 }
 
+/* Windows 98 clears the APIC's global enable bit (MSR 1Bh bit 11) and
+ * leaves it cleared after "Restart in MS-DOS mode"; CPUID then reports no
+ * APIC. In ring 0 the OVL sets the bit again while its APs run and writes
+ * the original value back when they stop, so nothing stays changed. Once
+ * re-enabled, the APIC is in its reset state: software-disabled with
+ * LINT0/LINT1 masked, which would block the 8259's interrupts. It is then
+ * programmed like the BIOS does (virtual wire mode). */
+static unsigned g_apic_off_lo, g_apic_off_hi; /* original MSR 1Bh value */
+static int      g_apic_reenable;              /* the APIC must be switched on for the APs */
+static int      g_apic_on;                    /* switched on by us right now */
+
+static int madt_apics(void);
+
+static int apic_enable(void) {
+    if (!g_apic_reenable || g_apic_on)
+        return 1;
+    unsigned f = flags_cli();
+    wrmsr2(MSR_APICBASE, g_apic_off_lo | APIC_EN, g_apic_off_hi);
+    int ok = (cpuid1_edx() & (1u << 9)) != 0;
+    if (ok) {
+        volatile uint32_t *a = (volatile uint32_t *) (g_apic_off_lo & 0xfffff000u);
+        if (!(a[APIC_SVR / 4] & 0x100)) {
+            a[APIC_SVR / 4]  = 0x1ff; /* software enable first: masks cannot be cleared before */
+            a[APIC_LVT0 / 4] = 0x700; /* ExtINT: the 8259 through LINT0 */
+            a[APIC_LVT1 / 4] = 0x400; /* NMI */
+        }
+        g_apic_on = 1;
+    } else {
+        wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+    }
+    flags_restore(f);
+    return ok;
+}
+
+static void apic_restore(void) {
+    if (!g_apic_on)
+        return;
+    unsigned f = flags_cli();
+    wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+    g_apic_on = 0;
+    flags_restore(f);
+}
+
 static int check(void) {
     unsigned lo, hi;
     if (g_state)
@@ -498,12 +549,30 @@ static int check(void) {
             return 0;
         }
         unsigned edx = cpuid1_edx();
+        g_mode       = MODE_RING0; /* phys_copy() for the MADT */
+        if (!(edx & (1u << 9)) && (edx & (1u << 5)) && (edx & (1u << 4)) && madt_apics() >= 2) {
+            /* No APIC in CPUID, but ACPI lists several: switched off (Windows 98) */
+            rdmsr2(MSR_APICBASE, &lo, &hi);
+            if (!(lo & APIC_EN) && (lo & 0x100) && !hi && !(lo & 0x400)) {
+                g_apic_off_lo   = lo;
+                g_apic_off_hi   = hi;
+                g_apic_reenable = 1;
+                if (apic_enable()) {
+                    LOG_SMP("APIC was switched off (e.g. by Windows 98): on while the extra cores run", -1);
+                    edx = cpuid1_edx();
+                } else {
+                    g_apic_reenable = 0;
+                }
+            }
+        }
+        g_mode = 0;
         if (!(edx & (1u << 9)) || !(edx & (1u << 5)) || !(edx & (1u << 4))) {
             LOG_SMP("off (no APIC/MSR/TSC)", -1);
             return 0;
         }
         rdmsr2(MSR_APICBASE, &lo, &hi);
-        if (!(lo & 0x800) || !(lo & 0x100) || hi) {
+        apic_restore(); /* start_aps() switches it on again */
+        if (!(lo & APIC_EN) || !(lo & 0x100) || hi) {
             LOG_SMP("off (APIC disabled, not the BSP, or above 4 GB)", -1);
             return 0;
         }
@@ -829,11 +898,69 @@ static void __cdecl ap_entry(int idx) {
     park_forever();
 }
 
+/* "hlt; jmp short hlt" (F4 EB FD) in the BIOS ROM (F0000h-FFFFFh), or 0.
+ * Searched once. */
+static uint32_t g_rom_hlt = 1;
+
+static uint32_t rom_hlt(void) {
+    static uint8_t buf[4096 + 2];
+    if (g_rom_hlt != 1)
+        return g_rom_hlt;
+    g_rom_hlt = 0;
+    for (uint32_t a = 0xf0000; a < 0x100000 && !g_rom_hlt; a += 4096) {
+        uint32_t len = a + 4096 + 2 <= 0x100000 ? 4096 + 2 : 4096;
+        if (!phys_copy(a, buf, len))
+            break;
+        for (uint32_t i = 0; i + 3 <= len; i++)
+            if (buf[i] == 0xf4 && buf[i + 1] == 0xeb && buf[i + 2] == 0xfd) {
+                g_rom_hlt = a + i;
+                break;
+            }
+    }
+    return g_rom_hlt;
+}
+
+/* A core in wait-for-SIPI (after INIT) does not join the firmware's SMI
+ * rendezvous: every SMI then waits for the BIOS's timeout. With a USB
+ * keyboard under DOS (legacy emulation, one SMI per port 60h/64h access)
+ * that took 2.1 ms instead of 96 us per access on an i7-4770T, and
+ * MS-DOS halted with "internal stack overflow" after a few key presses.
+ * So the stopped APs get one more SIPI into a few bytes in the trampoline
+ * page that jump to a hlt loop of the BIOS ROM: halted, but in a state
+ * that answers SMIs, and nothing of ours stays in use. Each AP counts
+ * itself there, so the page is freed only after all have left it. Without
+ * such a loop in the ROM they stay in wait-for-SIPI. */
+static void park_in_rom(void) {
+    uint32_t hlt = rom_hlt();
+    uint32_t n   = ((volatile tr_params *) (g_tr + P_BASE))->count;
+    if (!hlt || !n)
+        return;
+    volatile uint8_t *c = g_tr;
+    static const uint8_t code[12] = { 0xfa,                               /* cli */
+                                      0x2e, 0xf0, 0xfe, 0x06, 0x10, 0x00, /* lock inc byte [cs:10h] */
+                                      0xea, 0, 0, 0x00, 0xf0 };           /* jmp far F000:hlt */
+    for (int i = 0; i < 12; i++)
+        c[i] = code[i];
+    c[8]    = (uint8_t) (hlt - 0xf0000);
+    c[9]    = (uint8_t) ((hlt - 0xf0000) >> 8);
+    c[0x10] = 0;
+    for (int k = 0; k < 2 && c[0x10] < n; k++) {
+        ipi_all(ICR_SIPI | ((uint32_t) g_tr >> 12));
+        wait_us(200);
+    }
+    for (int t = 0; t < 100 && c[0x10] < n; t++)
+        wait_us(100);
+    if (c[0x10] < n)
+        LOG_SMP("APs in the ROM hlt loop (fewer than started): ", c[0x10]);
+}
+
 static void stop_aps(void) {
     if (!g_running)
         return;
     ipi_all(ICR_ASSERT | ICR_INIT);
     wait_us(1000);
+    park_in_rom();
+    apic_restore(); /* the APIC as found */
 #ifdef GLIDULATOR_DEBUG
     {   /* only if platform_worker_failed() has not reported it already */
         int seen = 0;
@@ -856,9 +983,14 @@ static int start_aps(void) {
     unsigned seg;
     if (g_running)
         return g_count;
+    if (!apic_enable()) {
+        LOG_SMP("off (APIC cannot be switched on again)", -1);
+        return 0;
+    }
     /* 4 KB page below 1 MB: allocate 8 KB, align inside */
     seg = dos_alloc(0x200, &g_dos_sel);
     if (!seg) {
+        apic_restore();
         LOG_SMP("off (no DOS memory)", -1);
         return 0;
     }
@@ -869,6 +1001,7 @@ static int start_aps(void) {
             LOG_SMP("off (trampoline page not identity-mapped)", -1);
         platform_free(g_stacks);
         dos_free(g_dos_sel);
+        apic_restore();
         return 0;
     }
     g_tr = (uint8_t *) page;
@@ -1050,6 +1183,11 @@ void smp_dos_emergency_stop(void) {
         log_exc((tr_params *) (g_tr + P_BASE)); /* the extra cores may have seen something too */
 #endif
     ipi_all(ICR_ASSERT | ICR_INIT);
+    if (g_rom_hlt != 1) { /* no ROM search (DPMI calls) on the crash path */
+        wait_us(1000);
+        park_in_rom();
+    }
+    apic_restore();
 }
 
 int platform_core_count(void) {

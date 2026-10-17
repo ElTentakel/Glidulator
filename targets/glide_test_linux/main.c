@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const uint16_t *g_last_frame;
 static int             g_last_w, g_last_h;
@@ -1359,7 +1360,8 @@ static int test_renderer(void) {
             "GLIDULATOR_DISPLAY", "GLIDULATOR_SCALE",   "GLIDULATOR_VGA_DITHER", "GLIDULATOR_OSD",
             "GLIDULATOR_WC",      "SST_GAMMA",          "GLIDULATOR_RENDERER",   "GLIDULATOR_THREADS",
             "GLIDULATOR_SMP",     "GLIDULATOR_VSYNC",   "GLIDULATOR_FSAA",       "GLIDULATOR_AA_POST",
-            "GLIDULATOR_VOODOO_FILTER", "GLIDULATOR_SPLASH", "GLIDULATOR_SPLASH_FILE", "GLIDULATOR_CRT"};
+            "GLIDULATOR_VOODOO_FILTER", "GLIDULATOR_SPLASH", "GLIDULATOR_SPLASH_FILE", "GLIDULATOR_CRT", "GLIDULATOR_SCREENSHOT",
+            "GLIDULATOR_BOARD"};
         static char text[GLIDE_CONFIG_MAX + 2];
         FILE       *f   = fopen("package/GLIDULAT.CFG", "rb");
         size_t      len = f ? fread(text, 1, sizeof text - 1, f) : 0;
@@ -1389,6 +1391,29 @@ static int test_renderer(void) {
         fail |= platform_write_file("build/linux/test_cfg.cfg", big, strlen(big)) ||
                 !glide_config_from_file("build/linux/test_cfg.cfg", "GLIDULATOR_DISPLAY", buf, sizeof buf) ||
                 strcmp(buf, "1280x720");
+    }
+    /* GLIDULATOR_BOARD: Voodoo Graphics by default and for unknown values,
+     * Voodoo Rush (SST96) on request. */
+    {
+        static const struct { const char *val; int type; } boards[] = {
+            {NULL, GR_SSTTYPE_VOODOO}, {"rush", GR_SSTTYPE_SST96}, {"RUSH", GR_SSTTYPE_SST96},
+            {"voodoo", GR_SSTTYPE_VOODOO}, {"rushx", GR_SSTTYPE_VOODOO}, {"voodoo2", GR_SSTTYPE_VOODOO}};
+        for (size_t i = 0; i < sizeof boards / sizeof boards[0]; i++) {
+            GrHwConfiguration hw;
+            if (boards[i].val)
+                setenv("GLIDULATOR_BOARD", boards[i].val, 1);
+            else
+                unsetenv("GLIDULATOR_BOARD");
+            if (!grSstQueryHardware(&hw) || hw.num_sst != 1 || hw.SSTs[0].type != boards[i].type ||
+                (boards[i].type == GR_SSTTYPE_SST96 ? hw.SSTs[0].sstBoard.SST96Config.fbRam != 4 ||
+                                                          hw.SSTs[0].sstBoard.SST96Config.nTexelfx != 1
+                                                    : hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx != 1)) {
+                fprintf(stderr, "GLIDULATOR_BOARD=%s: type %d\n", boards[i].val ? boards[i].val : "(unset)",
+                        (int) hw.SSTs[0].type);
+                fail = 1;
+            }
+        }
+        unsetenv("GLIDULATOR_BOARD");
     }
     if (fail)
         fprintf(stderr, "configuration read wrongly\n");
@@ -1859,6 +1884,82 @@ static int test_splash(void) {
     return fail;
 }
 
+/* Screenshot key (core/screenshot.c): BMP layout of the encoder, then a
+ * whole round through grBufferSwap into build/linux/SHOT0000.BMP and
+ * SHOT0001.BMP: header, render resolution, bottom-up rows, output gamma. */
+extern int g_linux_screenshot_key; /* platform/linux/platform_linux.c */
+
+static unsigned le32(const uint8_t *p) {
+    return p[0] | (p[1] << 8) | (p[2] << 16) | ((unsigned) p[3] << 24);
+}
+
+static int test_screenshot(void) {
+    printf("-- Test 23: screenshot (SHOTnnnn.BMP) --\n");
+    int fail = 0;
+    /* 3 x 2: rows of 9 bytes padded to 12, bottom row first */
+    static const uint16_t px[6] = { 0xf800, 0x07e0, 0x001f, 0xffff, 0x0000, 0x8410 };
+    uint8_t               bmp[54 + 24];
+    fail |= glide_screenshot_bmp(px, 3, 2, NULL, NULL) != sizeof bmp;
+    glide_screenshot_bmp(px, 3, 2, NULL, bmp);
+    fail |= bmp[0] != 'B' || bmp[1] != 'M' || le32(bmp + 2) != sizeof bmp || le32(bmp + 18) != 3 || le32(bmp + 22) != 2;
+    fail |= bmp[54] != 255 || bmp[55] != 255 || bmp[56] != 255;     /* (0,1) white */
+    fail |= bmp[60] != 0x84 || bmp[61] != 0x82 || bmp[62] != 0x84;   /* (2,1) grey 8410 */
+    fail |= bmp[63] != 0 || bmp[64] != 0 || bmp[65] != 0;            /* padding */
+    fail |= bmp[66] != 0 || bmp[67] != 0 || bmp[68] != 255;          /* (0,0) red: B G R */
+    fail |= bmp[69] != 0 || bmp[70] != 255 || bmp[71] != 0;          /* (1,0) green */
+    fail |= bmp[72] != 255 || bmp[73] != 0 || bmp[74] != 0;          /* (2,0) blue */
+    if (fail)
+        fprintf(stderr, "encoder: wrong BMP layout\n");
+
+    if (chdir("build/linux"))
+        return 1;
+    remove("SHOT0000.BMP");
+    remove("SHOT0001.BMP");
+    if (open_320x240()) {
+        if (chdir("../.."))
+            return 1;
+        return 1;
+    }
+    grBufferClear(0, 0, 0);
+    quad(10, 10, 60, 40, 255, 0, 0, 0);
+    grBufferSwap(0); /* no key: no file */
+    fail |= fopen("SHOT0000.BMP", "rb") != NULL;
+    g_linux_screenshot_key = 1;
+    grBufferSwap(0);
+    g_linux_screenshot_key = 1;
+    grBufferSwap(0);
+    grSstWinClose();
+    const uint8_t *lut  = glide_gamma_lut();
+    static uint8_t file[54 + 320 * 3 * 240 + 1];
+    for (int i = 0; i < 2; i++) {
+        FILE  *f = fopen(i ? "SHOT0001.BMP" : "SHOT0000.BMP", "rb");
+        size_t n = f ? fread(file, 1, sizeof file, f) : 0;
+        if (f)
+            fclose(f);
+        if (n != sizeof file - 1 || le32(file + 18) != 320 || le32(file + 22) != 240 || file[28] != 24) {
+            fprintf(stderr, "SHOT000%d.BMP: missing or wrong header (%zu bytes)\n", i, n);
+            fail = 1;
+            continue;
+        }
+        const uint8_t *red = file + 54 + (size_t) (239 - 20) * 960 + 20 * 3; /* (20,20) */
+        const uint8_t *blk = file + 54 + (size_t) (239 - 200) * 960 + 200 * 3;
+        uint8_t        k0  = lut ? lut[0] : 0, k255 = lut ? lut[255] : 255;
+        if (red[0] != k0 || red[1] != k0 || red[2] != k255 || blk[0] != k0 || blk[2] != k0) {
+            fprintf(stderr, "SHOT000%d.BMP: pixels %02x%02x%02x / %02x%02x%02x\n", i, red[2], red[1], red[0], blk[2],
+                    blk[1], blk[0]);
+            fail = 1;
+        }
+    }
+    fail |= fopen("SHOT0002.BMP", "rb") != NULL; /* one file per key press */
+    remove("SHOT0000.BMP");
+    remove("SHOT0001.BMP");
+    if (chdir("../.."))
+        return 1;
+    if (fail)
+        fprintf(stderr, "Test 23 FAILED\n");
+    return fail;
+}
+
 int main(void) {
     printf("glidulator smoke test\n");
     setenv("GLIDULATOR_SPLASH", "off", 1); /* the logo is on by default; only test 22 plays it */
@@ -1881,7 +1982,7 @@ int main(void) {
     if (test_demo_triangles() || test_demo_triangles_mipmap())
         return 1;
     if (test_lfb() || test_sst() || test_gutex() || test_fog_ncc() || test_gu_presets() || test_clip() || test_renderer() || test_output_osd() || test_fsaa() || test_fsaa_auto_post() || test_voodoo_filter() ||
-        test_lfb_after_close() || test_splash())
+        test_lfb_after_close() || test_splash() || test_screenshot())
         return 1;
 
     grGlideShutdown();

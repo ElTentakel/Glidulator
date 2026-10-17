@@ -90,6 +90,12 @@ void platform_display_close(void);
  * text mode before grSstWinClose); then nothing more may be drawn. */
 int platform_display_lost(void);
 
+/* Screenshot key (core/screenshot.c): 1 if it was pressed since the last
+ * call. DOS OVL: Print Screen, through a hook in front of the game's
+ * keyboard handler while the display is open (GLIDULATOR_SCREENSHOT=0
+ * turns it off); Linux: set by the test program; otherwise 0. */
+int platform_screenshot_key(void);
+
 /* Actual screen mode size; returns 1 if known. Used by the OSD only. */
 int platform_display_size(int *w, int *h);
 

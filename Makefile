@@ -25,7 +25,7 @@ ALL_HEADERS := $(wildcard core/*.h core/include/glidulator/*.h core/rasterizer/*
 # file.
 RASTER_CFLAGS := -std=c99 -Wall -g $(SAN) -fno-sanitize=shift
 
-CORE_SRCS   := core/glide_abi.c core/glide_modes.c core/glide_tex.c core/glide_lfb.c core/glide_sst.c core/glide_gutex.c core/glide_fog.c core/glide_stubs.c core/trace.c core/capture.c core/config.c core/renderer.c core/osd.c core/render_mt.c core/fsaa.c core/vfilter.c core/crt.c core/splash.c core/splash_orig.c
+CORE_SRCS   := core/glide_abi.c core/glide_modes.c core/glide_tex.c core/glide_lfb.c core/glide_sst.c core/glide_gutex.c core/glide_fog.c core/glide_stubs.c core/trace.c core/capture.c core/config.c core/renderer.c core/osd.c core/render_mt.c core/fsaa.c core/vfilter.c core/crt.c core/splash.c core/splash_orig.c core/screenshot.c
 RASTER_SRCS := core/rasterizer/vid_voodoo_render.c core/rasterizer/vid_voodoo_texture.c core/rasterizer/vid_voodoo_tables.c
 LINUX_SRCS  := platform/linux/platform_linux.c
 TEST_SRCS   := targets/glide_test_linux/main.c
@@ -176,7 +176,7 @@ WLINK  := $(OWENV) $(OWBIN)/wlink
 # builds.
 OW_OPT    := -obhilert -5s
 OW_CFLAGS := -bt=dos -mf $(OW_OPT) -fp5 -fpi87 -zri -ei -j -zastd=c99 -zq -we -bd -s -zl
-OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/dos_ovl/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c targets/glide_ovl/dllmain.c
+OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/dos_ovl/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c platform/dos_ovl/keyb_dos.c targets/glide_ovl/dllmain.c
 BUILD_OVL   := build/ovl
 OVL_OBJS    := $(patsubst %.c,$(BUILD_OVL)/%.obj,$(CORE_SRCS) $(RASTER_SRCS) $(OVL_SRCS))
 
@@ -225,15 +225,19 @@ ovl-debug:
 # All three OVLs
 ovl-all: ovl ovl-trace ovl-debug
 
-# Demo menu for the test stick (16-bit DOS, runs under FreeDOS and in the
-# Windows 98 DOS box), tools/usbstick/menu/ (not part of the public
-# repository)
+# Demo menus for the test stick, tools/usbstick/menu/ (not part of the
+# public repository): GLMENU.EXE (16-bit DOS, FreeDOS) and MENU.EXE (Win32
+# GUI for Windows 9x: no DOS box, which VBEMP cannot cope with)
 ifneq ($(wildcard tools/usbstick/menu/menu.c),)
 build/menu/GLMENU.EXE: tools/usbstick/menu/menu.c
 	mkdir -p build/menu
 	cd build/menu && $(OWENV) $(OWBIN)/wcl -bt=dos -ms -os -zq -we -wx -fe=GLMENU.EXE $(CURDIR)/tools/usbstick/menu/menu.c
 
-menu: build/menu/GLMENU.EXE
+build/menu/MENU.EXE: tools/usbstick/menu/menuw.c
+	mkdir -p build/menu
+	i686-w64-mingw32-gcc -O2 -s -Wall -Wextra -mwindows -o $@ $<
+
+menu: build/menu/GLMENU.EXE build/menu/MENU.EXE
 endif
 
 # Loads the real, Watcom-built GLIDE2X.OVL dynamically (the code path of a

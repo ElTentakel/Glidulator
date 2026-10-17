@@ -45,7 +45,8 @@ becomes another tentacle of the rasterizer.
   logo read from an original Glide file you already have, and, on its
   own or combined, an analog monitor locking onto the Voodoo signal.
 - **Modern displays**: aspect-correct scaling, any display mode, optional
-  on-screen display with frame rate and render times.
+  on-screen display with frame rate and render times, screenshots with
+  Print Screen under DOS (BMP in the game's resolution).
 - **Diagnostics**: trace and debug variants with performance logging,
   frame capture and replay, and crash handling on real hardware.
 
@@ -62,11 +63,27 @@ becomes another tentacle of the rasterizer.
 
 ## Quick start
 
-The current version is **0.9.0, a preview release**: the tested titles
+The current version is **0.9.1, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-090)). Download the
-package `glidulator-0.9.0.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-091)). Download the
+package `glidulator-0.9.1.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
+
+New in 0.9.1:
+
+- Windows 98: GLQuake no longer freezes when its first demo starts.
+- `GLIDULATOR_BOARD=rush` reports a Voodoo Rush, for Rush patches such as
+  Tomb Raider's `TUMBRUSH.EXE`.
+- DOS: Print Screen saves the current frame as a BMP
+  (`GLIDULATOR_SCREENSHOT`).
+- DOS: multi-core rendering after Windows 98's "Restart in MS-DOS mode"
+  (Windows leaves the local APIC switched off; Glidulator switches it back
+  on for the game's run). Tested in a virtual machine so far.
+- DOS: the other cores are parked in a BIOS halt loop after the game, which
+  fixes a hang ("internal stack overflow") on some machines after a
+  multi-core run.
+- The on-screen display shows the cores in use and available (`1/2 CORES`)
+  instead of the number of render threads.
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 

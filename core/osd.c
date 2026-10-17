@@ -158,15 +158,17 @@ static void set_lines(unsigned fps10, unsigned render10, unsigned out10) {
     p  = put_label(p, end, " MS");
     *p = 0;
 
-    /* 2: path, threads, resolution */
+    /* 2: path, cores used/available (game core plus workers), resolution */
     p   = g_osd_text[1];
     end = p + OSD_CHARS;
     p   = put_value(p, end);
     p   = put_str(p, end, glide_renderer_name(glide_renderer_active()));
     p   = put_sep(p, end);
     p   = put_value(p, end);
-    p   = put_uint(p, end, (unsigned) glide_renderer_threads());
-    p   = put_label(p, end, glide_renderer_threads() == 1 ? " THREAD" : " THREADS");
+    p   = put_uint(p, end, (unsigned) glide_renderer_cores());
+    p   = put_str(p, end, "/");
+    p   = put_uint(p, end, (unsigned) platform_core_count());
+    p   = put_label(p, end, platform_core_count() == 1 ? " CORE" : " CORES");
     p   = put_sep(p, end);
     p   = put_value(p, end);
     p   = put_uint(p, end, (unsigned) g_width);
@@ -355,6 +357,7 @@ void glide_present(int vsync) {
     /* FSAA/AA_POST: processed image (core/fsaa.c), otherwise fb_mem itself */
     uint16_t *fb = (uint16_t *) glide_fsaa_output();
     int       w  = 0;
+    glide_screenshot_frame(fb);   /* screenshot key: SHOTnnnn.BMP (core/screenshot.c) */
     glide_splash_first_frame(fb); /* monitor sync-in (GLIDULATOR_SPLASH) */
     if (g_osd_save) {
         w = text_width();

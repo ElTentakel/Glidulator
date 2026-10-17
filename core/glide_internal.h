@@ -177,6 +177,18 @@ void glide_osd_open(void);
 void glide_osd_close(void);
 void glide_present(int vsync);
 
+/* Screenshot (core/screenshot.c). glide_screenshot_frame(): glide_present,
+ * before the OSD; saves fb as SHOTnnnn.BMP if platform_screenshot_key()
+ * reports a key press. glide_screenshot_bmp(): w x h RGB565 -> 24-bit BMP
+ * (bottom-up, rows padded to 4 bytes) through lut (NULL = none) into out;
+ * returns the file size, out = NULL only computes it. */
+void   glide_screenshot_frame(const uint16_t *fb);
+size_t glide_screenshot_bmp(const uint16_t *fb, int w, int h, const uint8_t *lut, uint8_t *out);
+
+/* Output gamma table last set by glide_set_gamma() (core/glide_sst.c),
+ * NULL before the first one. */
+const uint8_t *glide_gamma_lut(void);
+
 /* grSstOrigin without trace entry (for grSstWinOpen). */
 void glide_set_origin(GrOriginLocation_t origin);
 

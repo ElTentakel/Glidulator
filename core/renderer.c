@@ -181,3 +181,8 @@ int glide_renderer_active(void) {
 int glide_renderer_threads(void) {
     return glide_mt_workers() ? g_threads : 1; /* 1 after a worker failure */
 }
+
+int glide_renderer_cores(void) {
+    int t = glide_renderer_threads();
+    return t >= 2 ? t + 1 : 1; /* workers plus the game's core */
+}

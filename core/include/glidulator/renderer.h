@@ -48,5 +48,7 @@ void glide_renderer_apply(void);
 /* Result of the last glide_renderer_apply(). */
 int glide_renderer_active(void);
 int glide_renderer_threads(void);
+/* Cores in use: the game's core plus the workers (1 when synchronous). */
+int glide_renderer_cores(void);
 
 #endif /* GLIDULATOR_RENDERER_H */

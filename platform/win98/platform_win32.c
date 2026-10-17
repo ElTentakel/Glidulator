@@ -247,6 +247,31 @@ static void build_conv_tables(void) {
     }
 }
 
+#ifdef GLIDULATOR_TRACE
+static void log_window(const char *what, HWND w);
+#endif
+
+/* GLQuake 0.97 minimizes its full-screen window whenever it loses the
+ * focus, and on every start it shows a progress dialog for a moment
+ * ("Creating 15 bit inverse palette") once the GL context exists. When
+ * the dialog closes, GLQuake is activated again but still minimized,
+ * takes that as "minimized" and stops drawing (no more grBufferSwap)
+ * until a key opens its menu. A timer on our window (the game's thread
+ * dispatches its messages) restores the program window when it is
+ * minimized although it is still in front; a program the user switched
+ * away from is not in front and stays minimized. */
+#define RESTORE_TIMER 1
+
+static void restore_program_window(void) {
+    HWND w = GetActiveWindow();
+    if (!w || !IsIconic(w) || w != GetForegroundWindow())
+        return;
+#ifdef GLIDULATOR_TRACE
+    log_window("Program window minimized in front, restoring:", w);
+#endif
+    ShowWindow(w, SW_RESTORE);
+}
+
 static LRESULT CALLBACK own_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_SETCURSOR) {
         SetCursor(NULL);
@@ -259,6 +284,10 @@ static LRESULT CALLBACK own_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_PAINT) {
         ValidateRect(hwnd, NULL);
         g_need_border = 1;
+        return 0;
+    }
+    if (msg == WM_TIMER && wp == RESTORE_TIMER) {
+        restore_program_window();
         return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
@@ -280,8 +309,10 @@ static HWND create_own_window(void) {
     HWND hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT, wc.lpszClassName,
                                 "Glidulator", WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN),
                                 GetSystemMetrics(SM_CYSCREEN), NULL, NULL, inst, NULL);
-    if (hwnd)
+    if (hwnd) {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetTimer(hwnd, RESTORE_TIMER, 200, NULL);
+    }
     return hwnd;
 }
 
@@ -300,6 +331,28 @@ static void log_window(const char *what, HWND w) {
               w && w == GetForegroundWindow(), r.right - r.left, r.bottom - r.top);
     platform_log(line);
 }
+
+/* Focus, activation and size messages of every window of the game's
+ * thread (the thread of grSstWinOpen), to find out who takes the focus.
+ * WM_KILLFOCUS: wParam is the window that gets it. */
+static HHOOK g_trace_hook;
+
+static LRESULT CALLBACK trace_hook_proc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        const CWPSTRUCT *m = (const CWPSTRUCT *) lp;
+        if (m->message == WM_ACTIVATE || m->message == WM_ACTIVATEAPP || m->message == WM_SETFOCUS ||
+            m->message == WM_KILLFOCUS || m->message == WM_SIZE || m->message == WM_SHOWWINDOW ||
+            m->message == WM_SYSCOMMAND || m->message == WM_CANCELMODE || m->message == WM_CAPTURECHANGED) {
+            char line[128], cls[32] = "";
+            GetClassNameA(m->hwnd, cls, sizeof cls);
+            wsprintfA(line, "%lu ms: message %04x to %08lx (%s), wParam %08lx, lParam %08lx\n",
+                      (unsigned long) (platform_time_us() / 1000), m->message, (unsigned long) (UINT_PTR) m->hwnd,
+                      cls, (unsigned long) m->wParam, (unsigned long) m->lParam);
+            platform_log(line);
+        }
+    }
+    return CallNextHookEx(g_trace_hook, code, wp, lp);
+}
 #endif
 
 /* Our window has no owner on purpose: Windows hides owned windows while
@@ -312,6 +365,31 @@ static void log_window(const char *what, HWND w) {
  * again should anything hide it. */
 static void keep_on_top(void) {
     static unsigned frames;
+#ifdef GLIDULATOR_TRACE
+    {
+        /* Log every change of the foreground window and its state. */
+        static HWND last_w;
+        static int  last_state = -1;
+        static HWND last_focus, last_active;
+        HWND        w     = GetForegroundWindow();
+        HWND        focus = GetFocus(), active = GetActiveWindow();
+        int         state = w ? (IsIconic(w) ? 1 : 0) | (IsWindowVisible(w) ? 2 : 0) : -1;
+        if (w != last_w || state != last_state || focus != last_focus || active != last_active) {
+            char line[128], cls[32] = "";
+            if (w)
+                GetClassNameA(w, cls, sizeof cls);
+            wsprintfA(line, "%lu ms, frame %u: focus %08lx, active %08lx, ours %08lx, foreground (%s)",
+                      (unsigned long) (platform_time_us() / 1000), frames,
+                      (unsigned long) (UINT_PTR) focus, (unsigned long) (UINT_PTR) active,
+                      (unsigned long) (UINT_PTR) g_hwnd, cls);
+            log_window(line, w);
+            last_w      = w;
+            last_state  = state;
+            last_focus  = focus;
+            last_active = active;
+        }
+    }
+#endif
     if (frames++ % 30)
         return;
     if (!IsWindowVisible(g_hwnd)) {
@@ -387,6 +465,8 @@ void platform_display_open(int w, int h) {
 #ifdef GLIDULATOR_TRACE
     log_mode(g_mode_changed ? "Mode switched," : "Mode unchanged, screen");
     log_window("Program window (active)", GetActiveWindow());
+    if (!g_trace_hook)
+        g_trace_hook = SetWindowsHookExA(WH_CALLWNDPROC, trace_hook_proc, NULL, GetCurrentThreadId());
 #endif
     g_hwnd = create_own_window();
     while (ShowCursor(FALSE) >= 0 && g_cursor_hidden < 100)
@@ -395,6 +475,11 @@ void platform_display_open(int w, int h) {
 }
 
 void platform_display_close(void) {
+#ifdef GLIDULATOR_TRACE
+    if (g_trace_hook)
+        UnhookWindowsHookEx(g_trace_hook);
+    g_trace_hook = NULL;
+#endif
     if (g_hwnd)
         DestroyWindow(g_hwnd);
     g_hwnd = NULL;
@@ -408,6 +493,11 @@ void platform_display_close(void) {
 }
 
 int platform_display_lost(void) {
+    return 0;
+}
+
+/* Windows has its own Print Screen (desktop to the clipboard). */
+int platform_screenshot_key(void) {
     return 0;
 }
 

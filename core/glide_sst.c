@@ -145,6 +145,13 @@ static float parse_float(const char *s) {
     return any ? v : 0.0f;
 }
 
+static uint8_t g_gamma_lut[256];
+static int     g_gamma_set;
+
+const uint8_t *glide_gamma_lut(void) {
+    return g_gamma_set ? g_gamma_lut : NULL;
+}
+
 void glide_set_gamma(float gamma) {
     uint8_t lut[256];
     int     e[33];
@@ -163,6 +170,9 @@ void glide_set_gamma(float gamma) {
     /* The 33rd sample point belongs to input "256"; interpolating to it
      * would put white at 254 for some gammas. Pure white stays white. */
     lut[255] = 255;
+    for (int i = 0; i < 256; i++)
+        g_gamma_lut[i] = lut[i];
+    g_gamma_set = 1;
     platform_set_gamma(lut);
 }
 

@@ -123,6 +123,15 @@ int platform_display_lost(void) {
     return 0;
 }
 
+/* Set by a test program to simulate the screenshot key. */
+int g_linux_screenshot_key;
+
+int platform_screenshot_key(void) {
+    int k                  = g_linux_screenshot_key;
+    g_linux_screenshot_key = 0;
+    return k;
+}
+
 int platform_display_size(int *w, int *h) {
     (void) w;
     (void) h;

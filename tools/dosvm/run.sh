@@ -30,6 +30,11 @@
 # R3PROBE="[AP]": run R3PROBE.EXE (r3probe.c: CR3/page walk/APIC under the
 #   DPMI host, with AP also starting the other cores) before Nature;
 #   result in build/dosvm/run/<...>.r3probe. Use with NATUREONLY=0.
+# SMITIME="<args>;<args>...": run SMITIME.EXE (smitime.c: SMI timing, INIT/
+#   ROM parking of the other cores) once per argument list, after R3PROBE;
+#   result in build/dosvm/run/<...>.smitime.
+# KEYLOG="<args>;...": run KEYLOG.EXE (keylog.c: port 60h as seen by an
+#   INT 09h hook, 15 s each; send keys with KEYS); result in <...>.keylog.
 #
 # QEMU_MACHINE="pc,max-ram-below-4g=3500M" mimics real boards (more memory
 # below 4 GB than QEMU's default of 3 GB).
@@ -60,6 +65,14 @@ if [ ! -f "$V/src/R3PROBE.EXE" ] || [ "$T/r3probe.c" -nt "$V/src/R3PROBE.EXE" ] 
     $OW wcc386 -bt=dos -mf -3r -zq -zastd=c99 -i="$ROOT/build/ovl" -fo="$V/src/r3probe.obj" "$T/r3probe.c"
     $OW wlink system dos4g option quiet name "$V/src/R3PROBE.EXE" file "$V/src/r3probe.obj"
 fi
+if [ ! -f "$V/src/SMITIME.EXE" ] || [ "$T/smitime.c" -nt "$V/src/SMITIME.EXE" ]; then
+    $OW wcc386 -bt=dos -mf -3r -zq -zastd=c99 -fo="$V/src/smitime.obj" "$T/smitime.c"
+    $OW wlink system dos4g option quiet name "$V/src/SMITIME.EXE" file "$V/src/smitime.obj"
+fi
+if [ ! -f "$V/src/KEYLOG.EXE" ] || [ "$T/keylog.c" -nt "$V/src/KEYLOG.EXE" ]; then
+    $OW wcc386 -bt=dos -mf -3r -zq -zastd=c99 -fo="$V/src/keylog.obj" "$T/keylog.c"
+    $OW wlink system dos4g option quiet name "$V/src/KEYLOG.EXE" file "$V/src/keylog.obj"
+fi
 IMG=$RUN/vm.img
 cp "$V/dl/fd/FD13LITE.img" "$IMG"
 RC=$RUN/mtoolsrc
@@ -86,6 +99,8 @@ printf '%s\r\n%sFILES=40\r\nBUFFERS=20\r\nSHELL=\\COMMAND.COM \\ /E:1024 /P=\\FD
     vdpmi) printf '\\SBEMU\\SBEMU %s\r\n' "${SBEMUARGS:-}" ;;
     esac
     [ -n "${R3PROBE+x}" ] && printf 'cd \\DIAG\r\nR3PROBE %s\r\ncd \\\r\n' "$R3PROBE"
+    [ -n "${SMITIME+x}" ] && { printf 'cd \\DIAG\r\n'; echo "$SMITIME" | tr ';' '\n' | while read -r a; do printf 'SMITIME %s\r\n' "$a"; done; printf 'cd \\\r\n'; }
+    [ -n "${KEYLOG+x}" ] && { printf 'cd \\DIAG\r\n'; echo "$KEYLOG" | tr ';' '\n' | while read -r a; do printf 'KEYLOG %s\r\n' "$a"; done; printf 'cd \\\r\n'; }
     printf 'cd \\NATURE\r\n'
     for i in $(seq "${OVLTEST:-0}"); do printf 'OVLTEST 2\r\ntype OVLTEST.LOG >> ALL.LOG\r\n'; done
     for i in $(seq "${NATUREONLY:-1}"); do printf 'NATURE\r\n'; done
@@ -103,6 +118,8 @@ sbemu|vdpmi)
     done ;;
 esac
 mcopy "$V/src/R3PROBE.EXE" c:/DIAG/
+mcopy "$V/src/SMITIME.EXE" c:/DIAG/
+mcopy "$V/src/KEYLOG.EXE" c:/DIAG/
 mcopy /opt/watcom/binw/dos4gw.exe c:/DIAG/DOS4GW.EXE
 mmd c:/NATURE
 N=$ROOT/build/compat/nature
@@ -164,5 +181,7 @@ for f in "$RUN"/*.ppm; do
 done
 mtype c:/NATURE/GLIDULAT.LOG 2>/dev/null | tr -d '\r' > "$OUT.log" || true
 [ -n "${R3PROBE+x}" ] && { mtype c:/DIAG/R3PROBE.TXT 2>/dev/null | tr -d '\r' > "$OUT.r3probe" || true; sed 's/^/  /' "$OUT.r3probe"; }
+[ -n "${SMITIME+x}" ] && { mtype c:/DIAG/SMITIME.TXT 2>/dev/null | tr -d '\r' > "$OUT.smitime" || true; sed 's/^/  /' "$OUT.smitime"; }
+[ -n "${KEYLOG+x}" ] && { mtype c:/DIAG/KEYLOG.TXT 2>/dev/null | tr -d '\r' > "$OUT.keylog" || true; sed 's/^/  /' "$OUT.keylog"; }
 [ -n "${OVLTEST:-}" ] && { mtype c:/NATURE/ALL.LOG 2>/dev/null | tr -d '\r' > "$OUT.ovltest" || true; }
 grep -E "Multi-core|Renderer|worker" "$OUT.log" 2>/dev/null | head -20 | sed 's/^/  /' || true

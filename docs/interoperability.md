@@ -24,12 +24,23 @@ your project.
   framebuffer through DPMI 0800h, and allocates memory through 0501h/0502h.
 - Polls ports 3DAh (retrace) and writes 3C8h/3C9h (palette). In ring 3
   these may trap through the host's I/O bitmap; that is slower but fine.
+- While the display is open: a protected-mode handler for INT 09h (IRQ 1,
+  DPMI 0204h/0205h) in front of the game's. It calls the previous handler
+  first, then reads port 60h for Print Screen (screenshot); no EOI, no PIC
+  access. Removed at `grSstWinClose` if the vector still points to it.
+  `GLIDULATOR_SCREENSHOT=0` turns it off.
 - **In ring 0 only** (DOS/4GW without a DPMI host):
   - sets `CR4.OSFXSR` if the BIOS has not, and restores it at
     `grSstWinClose`;
   - adds a write-combining MTRR range for the framebuffer (Intel's MTRR
     update procedure, interrupts off), and restores the original MTRRs at
-    close. Set `GLIDULATOR_WC=0` to disable.
+    close. Set `GLIDULATOR_WC=0` to disable;
+  - switches the local APIC back on if it was switched off (global enable
+    bit in MSR 1Bh clear, as Windows 98 leaves it after "Restart in MS-DOS
+    mode") and the ACPI MADT lists several APICs. If the APIC comes up in
+    its reset state, the OVL programs it like the BIOS (SVR enabled, LINT0
+    ExtINT, LINT1 NMI) so the 8259's interrupts keep flowing. The original
+    MSR value is written back as soon as the other cores are stopped.
 
 ### Other cores (APs)
 

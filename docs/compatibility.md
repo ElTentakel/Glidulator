@@ -18,6 +18,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 | Fucktory (Capsicum Tincture, 1998) | demo | **runs** | YIQ/NCC textures, `GetState`/`SetState`. |
 | Grand Theft Auto (DMA Design, 1997) | game demo | **runs** | `guTex*` texture management, LFB locks. |
 | Burnout: Championship Drag Racing (Bethesda, 1998) | game demo | **runs** | Fog, lines, motion blur through the LFB. |
+| Tomb Raider (Core Design, 1996), Voodoo Rush patch `TUMBRUSH.EXE` | game | **runs** (QEMU/KVM, FreeDOS) | Needs `GLIDULATOR_BOARD=rush`, otherwise it quits after the intro videos. Title menu and demo mode tested with the full CD in the drive (LaserLok: DOSBox fails with error 607). |
 | Archimedean Dynasty (Massive, 1996) | game demo, 3Dfx patch | menus tested | Mission start needs mouse operation, not automated. |
 | Yume 2 (inf, 1998) | demo | not tested | Crashes in DOSBox before the first Glide call (not Glidulator-related). |
 
@@ -25,7 +26,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 
 | Title | Type | Status | Notes |
 |---|---|---|---|
-| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture can freeze in the start-up demo loop, see [Known issues](#known-issues-in-090). |
+| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. |
 | Nature95 (Vertigo, 1997) | demo | **runs** | |
 | Formula 1 (Psygnosis) | game demo | **runs** | Into the race, cockpit view. |
 | Operation 3DFX '98 (7 entries) | demo contest | **all run** | No Reality, Chrome II (3 parts), Visions, Planet Cornball (3dfx MiniGL), Daggmask, Oblivion, Scenarios. |
@@ -34,22 +35,19 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 
 ## Not supported
 
-- **Statically linked Glide**: the 3Dfx versions of Tomb Raider and
-  Carmageddon link Glide into the executable and program the hardware
-  directly. There is no OVL/DLL to replace.
+- **Statically linked Glide**: the Voodoo Graphics versions of Tomb
+  Raider (`TOMB3DFX.EXE`) and Carmageddon link Glide into the executable
+  and program the hardware directly. There is no OVL/DLL to replace. Tomb
+  Raider's Voodoo Rush patch loads Glide and runs, see above.
 - **Descent and Descent 2 3Dfx patches**: they patch the full versions
   only; the shareware/demo data is not accepted.
 - **Glide 3.x**: games that need `glide3x.dll` are out of scope.
 
-## Known issues in 0.9.0
+## Known issues in 0.9.1
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
 
-- **GLQuake on Windows 98**: after starting the game (not with
-  `+timedemo`), the picture can stop updating during the demo loop that
-  plays behind the main menu. Pressing Enter opens the menu, and the game
-  continues normally.
 - **Uprising**: the crash on exit is fixed, but the fix has not been
   confirmed on real hardware yet.
 - **Rasterizer**: single pixels can stay open on the shared edges of a

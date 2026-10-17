@@ -16,6 +16,8 @@
 #include "../../platform/common/output_rect.h"
 
 void ovl_diag_machine(const char *when); /* diag_dos.c, debug OVL only */
+void keyb_dos_hook(void);                 /* keyb_dos.c: Print Screen */
+void keyb_dos_unhook(void);
 
 /* No calling convention or export marker: the extender looks for
  * "__DLLstart_" as an exact, undecorated symbol name ("option
@@ -74,6 +76,7 @@ void platform_display_open(int w, int h) {
     vid_set_options(&o);
     ovl_diag_machine("Start");
     vid_open(w, h);
+    keyb_dos_hook();
 }
 
 void platform_cpu_release(void); /* platform_watcom.c: restore CR4.OSFXSR */
@@ -81,6 +84,7 @@ void platform_cpu_release(void); /* platform_watcom.c: restore CR4.OSFXSR */
 
 void platform_display_close(void) {
     ovl_diag_machine("End");
+    keyb_dos_unhook();
     platform_cpu_release();
     vid_close();
 }

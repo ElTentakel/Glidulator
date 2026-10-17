@@ -45,6 +45,9 @@ Requirements and recommendations:
   manager, or with HIMEM only. Under EMM386 or other VCPI managers and in
   the DOS box of Windows, the OVL does not run in ring 0. It then renders
   on one core with the C path; everything else works.
+  After "Restart in MS-DOS mode" from Windows 98 (no memory manager), the
+  OVL switches the local APIC that Windows left off back on for the time
+  the extra cores run, so multi-core works there too.
 - Some DOS/4GW games abort with
   `DOS/16M error: [40] not enough available extended memory (XMIN)` when a
   memory manager is loaded on machines with a lot of RAM. Boot without one.
@@ -111,6 +114,7 @@ glidulator_fsaa = 2      anything after the value is ignored
 | DOS game runs too fast | `GLIDULATOR_VSYNC=1` |
 | Smoother edges | `GLIDULATOR_FSAA=auto` |
 | The 1997 look | `GLIDULATOR_VOODOO_FILTER=1`, `GLIDULATOR_SPLASH=original` with `GLIDULATOR_SPLASH_FILE`, `GLIDULATOR_CRT=1` |
+| Voodoo Rush version of a game quits after the intro | `GLIDULATOR_BOARD=rush` |
 | Rule out multi-core or JIT problems | `GLIDULATOR_THREADS=1`, `GLIDULATOR_RENDERER=c` |
 | Brighter or darker picture | `SST_GAMMA=1.0` (darker) ... `1.7` (brighter) |
 
@@ -125,6 +129,7 @@ the Windows DLL.
 | `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4; `1` = render on the game's core. Windows 95/98/ME always render on one core. |
 | `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Never under Windows. |
 | `GLIDULATOR_VSYNC` | `auto`, `0`, `1` | `auto` | DOS only: wait for vertical retrace before showing a frame. `auto` follows the game's `grBufferSwap` interval, `1` always waits, `0` never. Keeps games that time their logic per frame at the original speed. |
+| `GLIDULATOR_BOARD` | `voodoo`, `rush` | `voodoo` | Which 3dfx board Glidulator reports to the game. `voodoo` = Voodoo Graphics. `rush` = Voodoo Rush, for Rush patches that refuse to run on anything else, such as Tomb Raider's `TUMBRUSH.EXE` (it quits right after the intro videos without a message). Rendering is the same; leave it at `voodoo` for all other games. |
 | `SST_GAMMA` | number | `1.3` | Output gamma like the Voodoo RAMDAC (the variable name of 3dfx's driver). `1.0` is neutral; higher values are brighter. |
 
 ### Display
@@ -135,7 +140,7 @@ the Windows DLL.
 | `GLIDULATOR_VGA_DITHER` | `blue`, `bayer`, `off` | `blue` | DOS mode 13h (256 colours): how the picture is reduced. Every pixel first averages the area it covers, which removes the Voodoo's own dither pattern. `blue` then dithers with a fine, irregular pattern that stays still from frame to frame, `bayer` with the classic regular pattern, `off` rounds to the nearest colour (visible bands). |
 | `GLIDULATOR_SCALE` | `aspect`, `stretch`, `integer`, `none` | `aspect` | How the picture fills the screen. `aspect` keeps 4:3 for every game resolution, as Voodoo boards displayed it, with black borders. |
 | `GLIDULATOR_WC` | `0`, `1` | `1` | DOS only: enable write-combining for the video memory while the game runs. This is several times faster on real hardware. The original MTRRs are restored on exit. |
-| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, threads, resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
+| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `1/2 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS one per physical core, under Windows NT/2000/XP every logical processor, under Windows 9x always 1), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
 
 ### Image quality
 
@@ -155,6 +160,7 @@ The options can be combined. The on-screen display is not filtered.
 | Setting | Values | Default | Effect |
 |---|---|---|---|
 | `GLIDULATOR_SPLASH` | `gl1`, `off`, `original` | `gl1` | Logo after the first `grSstWinOpen`. `gl1`: the Glidulator animation (4.1 s): a moonlit night sea, a tentacle rising out of the water in front of the moon, and the chrome GLIDULATOR wordmark with a glint running along it. Skipped under DOS without a clock (no TSC, e.g. DOSBox). `original`: 3dfx's own spinning-logo animation (2.5 s), read from an original Glide 2.x file (see below). (The older value `crt` still means `GLIDULATOR_CRT=1` without a logo.) |
+| `GLIDULATOR_SCREENSHOT` | `0`, `1` | `1` | DOS: Print Screen saves the next frame as `SHOT0000.BMP`, `SHOT0001.BMP`, ... in the current directory (24-bit BMP in the game's render resolution, with gamma, without OSD, scaling or video filter). While the game runs, the OVL puts a small handler in front of the game's keyboard handler; it only looks at the key and passes everything on. `0` leaves the keyboard alone. Under Windows, Print Screen stays Windows' own (desktop to the clipboard). |
 | `GLIDULATOR_CRT` | `0`, `1` | `0` | Monitor effect: every switch to the Voodoo picture looks like an analog monitor locking onto a new signal (the picture rolls, lines bend, brightness settles, a little static), and switching back loses sync the same way. Works with or without a logo. Under DOS the switch back is skipped if the program has already returned to text mode itself. |
 | `GLIDULATOR_SPLASH_FILE` | path without spaces | - | An original Voodoo Graphics `GLIDE2X.OVL` or `glide2x.dll` (as shipped with many games; either file works on both systems). Glidulator reads only the animation's model and textures from it and draws them itself; nothing from the file is executed. If the file is missing or contains no splash data, the Glidulator animation plays instead. |
 
@@ -181,7 +187,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.0 (trace)
+Glidulator GL-1 0.9.1 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame
@@ -212,5 +218,4 @@ The Debug variant additionally:
 | Black borders | Expected with `GLIDULATOR_SCALE=aspect` on non-4:3 screens. Use `stretch` if you prefer. |
 | Game runs too fast | Set `GLIDULATOR_VSYNC=1` (DOS). |
 | A setting has no effect | Check the spelling, the directory the game starts from, and that the line has no `#`. The Trace log shows the chosen renderer, threads and display mode. |
-| Windows 98: GLQuake picture stops in the start-up demo | Press Enter to open the menu (known issue in 0.9.0). |
 | Anything else | Run the Debug variant and keep `GLIDULAT.LOG`. Report it at <https://github.com/ElTentakel/Glidulator/issues> with the log and the variant used. |

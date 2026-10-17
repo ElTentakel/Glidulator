@@ -119,10 +119,39 @@ void GR_EXPORT GLIDE_API grGlideGetVersion(char *version) {
     memcpy(version, v, n + 1);
 }
 
+/* "voodoo" / "rush" (case-insensitive) -> GR_SSTTYPE_*, otherwise -1. */
+static int board_parse(const char *s) {
+    static const struct { const char *name; int type; } boards[] = {
+        {"voodoo", GR_SSTTYPE_VOODOO}, {"rush", GR_SSTTYPE_SST96}};
+    for (size_t i = 0; i < sizeof boards / sizeof boards[0]; i++) {
+        const char *a = s, *b = boards[i].name;
+        while (*a && (*a | 0x20) == *b) {
+            a++;
+            b++;
+        }
+        if (!*a && !*b)
+            return boards[i].type;
+    }
+    return -1;
+}
+
+/* GLIDULATOR_BOARD: voodoo (default) | rush. Some Voodoo Rush patches
+ * (Tomb Raider's TUMBRUSH.EXE) quit silently unless grSstQueryHardware()
+ * reports GR_SSTTYPE_SST96; reporting it for every game is riskier, so it
+ * is opt-in. Values as for the Voodoo Graphics board (4 MB, 1 TMU, 2 MB). */
 static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
+    char cfg[16];
     memset(hwconfig, 0, sizeof(*hwconfig));
-    hwconfig->num_sst                                  = 1;
-    hwconfig->SSTs[0].type                              = 0; /* GR_SSTTYPE_VOODOO, see abi/constants.tsv */
+    hwconfig->num_sst = 1;
+    if (platform_get_config("GLIDULATOR_BOARD", cfg, sizeof cfg) && board_parse(cfg) == GR_SSTTYPE_SST96) {
+        hwconfig->SSTs[0].type                                  = GR_SSTTYPE_SST96;
+        hwconfig->SSTs[0].sstBoard.SST96Config.fbRam            = 4;
+        hwconfig->SSTs[0].sstBoard.SST96Config.nTexelfx         = 1;
+        hwconfig->SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRev = 1;
+        hwconfig->SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRam = 2;
+        return;
+    }
+    hwconfig->SSTs[0].type                              = GR_SSTTYPE_VOODOO;
     hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam        = 4; /* MB, like a 4 MB Voodoo Graphics board */
     hwconfig->SSTs[0].sstBoard.VoodooConfig.fbiRev       = 1;
     hwconfig->SSTs[0].sstBoard.VoodooConfig.nTexelfx     = 1;
@@ -131,8 +160,9 @@ static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
     hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam = 2;
 }
 
-/* Both report one Voodoo Graphics board: games call grSstQueryHardware()
- * right after grGlideInit() and quit immediately if no board is found. */
+/* Both report one board (see GLIDULATOR_BOARD above): games call
+ * grSstQueryHardware() right after grGlideInit() and quit immediately if
+ * no board is found. */
 FxBool GR_EXPORT GLIDE_API grSstQueryHardware(GrHwConfiguration *hwconfig) {
     GLIDE_TRACE("grSstQueryHardware");
     if (hwconfig)

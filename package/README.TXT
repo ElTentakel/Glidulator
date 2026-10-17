@@ -45,10 +45,18 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
+NEW IN 0.9.1
+  - Windows 98: GLQuake no longer freezes when its first demo starts.
+  - GLIDULATOR_BOARD=rush reports a Voodoo Rush, for Rush patches such as
+    Tomb Raider's TUMBRUSH.EXE.
+  - DOS: Print Screen saves the current frame as SHOT0000.BMP, ...
+  - DOS: multi-core rendering also after Windows 98's "Restart in MS-DOS
+    mode" (tested in a virtual machine so far).
+  - DOS: fixes a hang ("internal stack overflow") after a multi-core run
+    on some machines.
+  - The on-screen display shows the cores in use and available.
+
 KNOWN ISSUES
-  - Windows 98, GLQuake: after starting the game, the picture can stop
-    updating in the demo loop behind the main menu. Press Enter: the menu
-    opens and the game continues.
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
     "DOS/16M error: [40]" when a memory manager is loaded. Boot without.
   - SBEMU (sound for DOS on modern machines): works with the DPMI host
