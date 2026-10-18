@@ -1,5 +1,5 @@
-/* Test of the MTRR planner (platform/dos_ovl/mtrr_plan.c). */
-#include "../platform/dos_ovl/mtrr_plan.h"
+/* Test of the MTRR planner (platform/common/mtrr_plan.c). */
+#include "../platform/common/mtrr_plan.h"
 
 #include <stdio.h>
 #include <string.h>

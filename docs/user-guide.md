@@ -12,7 +12,8 @@ before calling technical support; there is no technical support.
 |---|---|
 | `BIN\GLIDE2X.OVL` | Glide 2.x for DOS games (DOS/4G LE DLL, loaded by the game) |
 | `BIN\glide2x.dll` | Glide 2.x for Windows 9x games |
-| `BIN\TRACE\`, `BIN\DEBUG\` | The same two files in the Trace and Debug variants |
+| `BIN\GLSMP.VXD` | Multi-core rendering under Windows 95/98/ME: loaded by `glide2x.dll` while the game runs (optional) |
+| `BIN\TRACE\`, `BIN\DEBUG\` | The same files in the Trace and Debug variants |
 | `GLIDULAT.CFG` | Example settings file: every setting, commented out, with its default |
 | `README.TXT` | Short introduction and known issues |
 | `MANUAL.TXT`, `COMPAT.TXT` | This guide and the compatibility list as plain text |
@@ -56,12 +57,23 @@ Requirements and recommendations:
 
 1. Copy `glide2x.dll` into the game directory (next to the `.exe`, or the
    directory of the game's renderer DLL), replacing the game's own copy.
-2. Start the game with its 3Dfx option.
+2. For multi-core rendering, copy `GLSMP.VXD` into the same directory.
+3. Start the game with its 3Dfx option.
 
 Glidulator opens its own full-screen output window above the game's window
 and switches the display mode for the duration of the game (see
-`GLIDULATOR_DISPLAY`). Windows 9x schedules one CPU core only, so render
-workers are not used there; the JIT is.
+`GLIDULATOR_DISPLAY`).
+
+Windows 95/98/ME schedule one CPU core only. With `GLSMP.VXD` next to the
+DLL, Glidulator starts the other cores itself and runs its render workers
+there, as under DOS: one worker per physical core (Hyper-Threading siblings
+stay idle), up to four. The VxD is loaded dynamically when the game first
+uses Glide and unloaded when it ends, also when it is killed; nothing is
+installed and the registry is not touched. Without the file, or with
+`GLIDULATOR_SMP=off`, rendering stays on one core. The Trace log shows
+`Multi-core: Windows 9x VxD up, ...` when it is in use. The CPU's local
+APIC must be in xAPIC mode (every multi-core PC of the Windows 98 era and
+later boots in it unless the firmware selects x2APIC).
 
 For games using the 3dfx MiniGL (`opengl32.dll` for Voodoo), keep that DLL.
 It calls `glide2x.dll`.
@@ -126,8 +138,8 @@ the Windows DLL.
 | Setting | Values | Default | Effect |
 |---|---|---|---|
 | `GLIDULATOR_RENDERER` | `auto`, `c`, `jit` | `auto` | Pixel pipeline. `auto` picks the JIT when the CPU has SSE2 and the system saves SSE registers, otherwise the C path. Both give identical pictures. |
-| `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4; `1` = render on the game's core. Windows 95/98/ME always render on one core. |
-| `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Never under Windows. |
+| `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4; `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
+| `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Under Windows 95/98/ME only `off` matters: it keeps `GLSMP.VXD` unloaded (one core); every other value uses it when present. |
 | `GLIDULATOR_VSYNC` | `auto`, `0`, `1` | `auto` | DOS only: wait for vertical retrace before showing a frame. `auto` follows the game's `grBufferSwap` interval, `1` always waits, `0` never. Keeps games that time their logic per frame at the original speed. |
 | `GLIDULATOR_BOARD` | `voodoo`, `rush` | `voodoo` | Which 3dfx board Glidulator reports to the game. `voodoo` = Voodoo Graphics. `rush` = Voodoo Rush, for Rush patches that refuse to run on anything else, such as Tomb Raider's `TUMBRUSH.EXE` (it quits right after the intro videos without a message). Rendering is the same; leave it at `voodoo` for all other games. |
 | `SST_GAMMA` | number | `1.3` | Output gamma like the Voodoo RAMDAC (the variable name of 3dfx's driver). `1.0` is neutral; higher values are brighter. |
@@ -139,7 +151,7 @@ the Windows DLL.
 | `GLIDULATOR_DISPLAY` | `glide`, `desktop`, `WxH`, `WxHxBPP`; DOS also `vga` | `glide` | Screen mode. `glide` = the game's resolution (or the smallest mode it fits into). `desktop` = do not switch (Windows). `1280x720` etc. for a fixed mode, e.g. on 16:9 monitors. `vga` = VGA mode 13h only (plain VGA, no VESA driver needed). |
 | `GLIDULATOR_VGA_DITHER` | `blue`, `bayer`, `off` | `blue` | DOS mode 13h (256 colours): how the picture is reduced. Every pixel first averages the area it covers, which removes the Voodoo's own dither pattern. `blue` then dithers with a fine, irregular pattern that stays still from frame to frame, `bayer` with the classic regular pattern, `off` rounds to the nearest colour (visible bands). |
 | `GLIDULATOR_SCALE` | `aspect`, `stretch`, `integer`, `none` | `aspect` | How the picture fills the screen. `aspect` keeps 4:3 for every game resolution, as Voodoo boards displayed it, with black borders. |
-| `GLIDULATOR_WC` | `0`, `1` | `1` | DOS only: enable write-combining for the video memory while the game runs. This is several times faster on real hardware. The original MTRRs are restored on exit. |
+| `GLIDULATOR_WC` | `0`, `1` | `1` | Enable write-combining for the video memory while the game runs. This is several times faster on real hardware. The original MTRRs are restored on exit. Windows 95/98/ME: only with generic display drivers (VBEMP and the like); real drivers set it themselves. |
 | `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `1/2 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS one per physical core, under Windows NT/2000/XP every logical processor, under Windows 9x always 1), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
 
 ### Image quality
@@ -187,7 +199,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.1 (trace)
+Glidulator GL-1 0.9.2 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame
@@ -214,6 +226,8 @@ The Debug variant additionally:
 | The game says no 3Dfx card was found | Make sure the game uses our `GLIDE2X.OVL`/`glide2x.dll` (game directory) and its 3Dfx option. Statically linked Glide games cannot use Glidulator. |
 | DOS: `DOS/16M error: [40]` | Boot without memory manager (see Installation). |
 | DOS: only one core used, OSD shows `C` instead of `JIT` | A memory manager or the Windows DOS box is active (no ring 0). Boot plain DOS. |
+| Windows 9x: only one core used (OSD `1/1 CORE`) | `GLSMP.VXD` must lie next to `glide2x.dll`. The Trace log's `Multi-core:` line gives the reason otherwise (e.g. x2APIC mode). |
+| Windows 9x: problems that go away with one core | Set `GLIDULATOR_SMP=off` or remove `GLSMP.VXD`, and report it with the Trace log. |
 | Picture too slow | Check the OSD. With FSAA or the video filter on, turn them off. Under DOS, make sure write-combining is active (Trace log "Write-Combining"). |
 | Black borders | Expected with `GLIDULATOR_SCALE=aspect` on non-4:3 screens. Use `stretch` if you prefer. |
 | Game runs too fast | Set `GLIDULATOR_VSYNC=1` (DOS). |

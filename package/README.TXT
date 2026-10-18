@@ -10,8 +10,8 @@ WHAT IT IS
   A software implementation of the 3dfx Voodoo Graphics accelerator and
   its Glide 2.x programming interface for MS-DOS and Windows 95/98/ME.
   Drop one file next to a late-90s Glide game, and it renders through
-  Glidulator instead of a Voodoo card. Under plain DOS it puts the other
-  CPU cores to work as additional render units.
+  Glidulator instead of a Voodoo card. Under plain DOS and Windows
+  95/98/ME it puts the other CPU cores to work as additional render units.
 
   ElTentakel Graphics Systems is a fictional company. 3dfx, Voodoo and
   Glide are trademarks of their respective owners; Glidulator is not
@@ -20,6 +20,7 @@ WHAT IT IS
 CONTENTS
   BIN\GLIDE2X.OVL        Glide for DOS games (release variant)
   BIN\GLIDE2X.DLL        Glide for Windows 9x games (release variant)
+  BIN\GLSMP.VXD          Windows 9x multi-core helper, next to the DLL
   BIN\TRACE\             Trace variant: writes GLIDULAT.LOG (performance)
   BIN\DEBUG\             Debug variant: detailed log, crash handling
   GLIDULAT.CFG           Example settings, every setting with its default
@@ -34,6 +35,8 @@ INSTALLATION
             then Glidulator uses all CPU cores and its JIT compiler.
   Windows:  copy BIN\GLIDE2X.DLL into the game directory (replacing the
             game's own file) and start the game with its 3Dfx option.
+            Copy BIN\GLSMP.VXD next to it to render on several CPU cores
+            (loaded only while the game runs, nothing is installed).
             Keep a game's 3dfx MiniGL (OPENGL32.DLL); it calls Glide.
   Settings: optional. Copy GLIDULAT.CFG next to the game and remove the
             # in front of what you want to change. GLIDULATOR_OSD=1 shows
@@ -45,16 +48,14 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.1
-  - Windows 98: GLQuake no longer freezes when its first demo starts.
-  - GLIDULATOR_BOARD=rush reports a Voodoo Rush, for Rush patches such as
-    Tomb Raider's TUMBRUSH.EXE.
-  - DOS: Print Screen saves the current frame as SHOT0000.BMP, ...
-  - DOS: multi-core rendering also after Windows 98's "Restart in MS-DOS
-    mode" (tested in a virtual machine so far).
-  - DOS: fixes a hang ("internal stack overflow") after a multi-core run
-    on some machines.
-  - The on-screen display shows the cores in use and available.
+NEW IN 0.9.2
+  - Windows 95/98/ME: multi-core rendering. Copy BIN\GLSMP.VXD next to
+    GLIDE2X.DLL; it is loaded only while the game runs and starts the
+    other CPU cores (GLQuake on a Core i7-4770T: 38.8 instead of 15.4
+    frames per second). GLIDULATOR_SMP=off turns it off.
+  - Windows 9x: write-combining for the framebuffer with generic display
+    drivers such as VBEMP (faster output; GLIDULATOR_WC=0 turns it off).
+  - The trace DLL no longer crashes on start with Nature95.
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -65,7 +66,9 @@ KNOWN ISSUES
   - Rasterizer: single pixels can stay open on shared triangle edges.
   - Glide functions without effect: grAA* (anti-aliased primitives),
     guMP*, guTexCreateColorMipMap. No tested title uses them.
-  - Windows 95/98/ME render on one CPU core (limit of the system).
+  - Windows 95/98/ME: multi-core rendering (GLSMP.VXD) is new, tested in
+    a virtual machine and on one real PC. If a game misbehaves with it,
+    set GLIDULATOR_SMP=off or remove GLSMP.VXD.
 
 REPORTING PROBLEMS
   Use the Debug variant, reproduce the problem and attach GLIDULAT.LOG

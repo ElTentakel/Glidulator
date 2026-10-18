@@ -38,12 +38,12 @@ MINGW_WINDRES        := i686-w64-mingw32-windres
 MINGW_STRIP          := i686-w64-mingw32-strip
 MINGW_CFLAGS         := -std=c99 -Wall -Wextra -Wpedantic -g -O2 $(WIN98_DEFS)
 MINGW_RASTER_CFLAGS  := -std=c99 -Wall -g -O2 $(WIN98_DEFS)
-WIN98_SRCS   := platform/win98/platform_win32.c
+WIN98_SRCS   := platform/win98/platform_win32.c platform/win98/wc_win9x.c platform/common/mtrr_plan.c
 DLL_SRCS     := targets/glide_dll/dllmain.c
 BUILD_WIN98  := build/win98
 WIN98_OBJS   := $(patsubst %.c,$(BUILD_WIN98)/%.o,$(CORE_SRCS) $(RASTER_SRCS) $(WIN98_SRCS) $(DLL_SRCS))
 
-.PHONY: all test clean win98 win98-trace win98-debug win98-all dos ovl ovl-trace ovl-debug ovl-all ovl-demo menu dosbox-test replay replay32 bench dist
+.PHONY: all test clean win98 vxd win98-trace win98-debug win98-all dos ovl ovl-trace ovl-debug ovl-all ovl-demo menu dosbox-test replay replay32 bench dist
 
 all: test
 
@@ -84,8 +84,8 @@ bench:
 # runs without BIOS, so it is tested here under ASan/UBSan.
 VIDEO_TEST_OBJS := $(BUILD)/platform/dos_ovl/video.o $(BUILD)/tests/video_test.o
 
-# MTRR planner for the OVL's write-combining (platform/dos_ovl/mtrr_plan.c)
-MTRR_TEST_OBJS := $(BUILD)/platform/dos_ovl/mtrr_plan.o $(BUILD)/tests/mtrr_test.o
+# MTRR planner for write-combining (platform/common/mtrr_plan.c; OVL and DLL)
+MTRR_TEST_OBJS := $(BUILD)/platform/common/mtrr_plan.o $(BUILD)/tests/mtrr_test.o
 
 $(BUILD)/mtrr_test: $(MTRR_TEST_OBJS)
 	$(CC) $(MTRR_TEST_OBJS) -o $@ $(SAN)
@@ -104,7 +104,7 @@ $(BUILD)/%.o: %.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
-win98: $(BUILD_WIN98)/glide2x.dll
+win98: $(BUILD_WIN98)/glide2x.dll $(VXD)
 
 # Exports only through the generated .def (3dfx names, see gen_glide2x.py);
 # libgcc static because a fresh Windows 98 has no libgcc_s_dw2-1.dll.
@@ -166,6 +166,7 @@ OWBIN  := $(WATCOM)/binl64
 OWENV  := env WATCOM=$(WATCOM) INCLUDE=$(WATCOM)/h PATH=$(OWBIN):$(PATH)
 WCC    := $(OWENV) $(OWBIN)/wcc386
 WLINK  := $(OWENV) $(OWBIN)/wlink
+WASM   := $(OWENV) $(OWBIN)/wasm
 # -5s: Pentium instruction selection with the stack/stdcall calling
 # convention (required for the decorated export names, see glide2x.h).
 # -bd -s -zl: DLL code, no stack probes, no default libraries (see
@@ -176,11 +177,36 @@ WLINK  := $(OWENV) $(OWBIN)/wlink
 # builds.
 OW_OPT    := -obhilert -5s
 OW_CFLAGS := -bt=dos -mf $(OW_OPT) -fp5 -fpi87 -zri -ei -j -zastd=c99 -zq -we -bd -s -zl
-OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/dos_ovl/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c platform/dos_ovl/keyb_dos.c targets/glide_ovl/dllmain.c
+OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/common/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c platform/dos_ovl/keyb_dos.c targets/glide_ovl/dllmain.c
 BUILD_OVL   := build/ovl
 OVL_OBJS    := $(patsubst %.c,$(BUILD_OVL)/%.obj,$(CORE_SRCS) $(RASTER_SRCS) $(OVL_SRCS))
 
 ovl: $(BUILD_OVL)/GLIDE2X.OVL
+
+# GLSMP.VXD: dynamically loaded Windows 9x VxD that runs the DLL's render
+# workers on the other cores (platform/win98/vxd/glsmp.asm, loaded by
+# platform/win98/platform_win32.c). One file for all three DLL variants.
+# A VxD is an LE file like the OVL: Open Watcom wasm + wlink "form windows
+# vxd dynamic", whose only export names the DDB. The 16-bit AP trampoline is
+# assembled by GNU as into a flat binary and included as "db" lines.
+BUILD_VXD := build/win98vxd
+VXD       := $(BUILD_VXD)/GLSMP.VXD
+
+vxd: $(VXD)
+
+$(BUILD_VXD)/aptramp.inc: platform/win98/vxd/aptramp.S
+	mkdir -p $(dir $@)
+	$(CC) -m32 -c $< -o $(BUILD_VXD)/aptramp.o
+	objcopy -O binary -j .text $(BUILD_VXD)/aptramp.o $(BUILD_VXD)/aptramp.bin
+	{ echo "AP_TRAMP label byte"; \
+	  od -An -v -tu1 $(BUILD_VXD)/aptramp.bin | awk '{ printf "    db "; for (i = 1; i <= NF; i++) printf "%s%d", (i > 1 ? "," : ""), $$i; printf "\n" }'; \
+	  echo 'AP_TRAMP_LEN equ $$ - AP_TRAMP'; } > $@
+
+$(VXD): platform/win98/vxd/glsmp.asm $(BUILD_VXD)/aptramp.inc
+	$(WASM) -zq -i=$(BUILD_VXD) -fo=$(BUILD_VXD)/glsmp.obj $<
+	printf 'form windows vxd dynamic\nfile %s\nname %s\nexport GLSMP_DDB\noption map=%s\n' \
+	    $(BUILD_VXD)/glsmp.obj $@ $(BUILD_VXD)/glsmp.map > $(BUILD_VXD)/glsmp.lnk
+	$(WLINK) @$(BUILD_VXD)/glsmp.lnk
 
 $(BUILD_OVL)/glide2x.lnk: targets/glide_ovl/glide2x.lnk.in
 	mkdir -p $(dir $@)
@@ -278,7 +304,7 @@ $(BUILD_DOSBOX)/OVLTEST.EXE: targets/glide_dos_ovltest/main.c tools/leload/leloa
 
 # Release package: tests first, then all six binaries.
 #   build/dist/glidulator-<version>.zip          for users: BIN\ (release),
-#       BIN\TRACE\, BIN\DEBUG\ (OVL and DLL each), GLIDULAT.CFG, texts
+#       BIN\TRACE\, BIN\DEBUG\ (OVL, DLL and GLSMP.VXD each), GLIDULAT.CFG, texts
 #       with CRLF line ends, DLLs without symbols
 #   build/dist/glidulator-<version>-symbols.zip  for crash analysis: DLLs
 #       with symbols and the OVL maps (tools/dosvm/ovladdr.py); keep it for
@@ -297,6 +323,7 @@ dist: test ovl-all win98-all
 	$(MINGW_STRIP) -o $(DIST)/BIN/glide2x.dll build/win98/glide2x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/TRACE/glide2x.dll build/win98_trace/glide2x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/DEBUG/glide2x.dll build/win98_debug/glide2x.dll
+	for d in BIN BIN/TRACE BIN/DEBUG; do cp $(VXD) $(DIST)/$$d/GLSMP.VXD; done
 	cp build/ovl/GLIDE2X.map build/win98/glide2x.dll $(DIST_SYM)/
 	cp build/ovl_trace/GLIDE2X.map build/win98_trace/glide2x.dll $(DIST_SYM)/TRACE/
 	cp build/ovl_debug/GLIDE2X.map build/win98_debug/glide2x.dll $(DIST_SYM)/DEBUG/

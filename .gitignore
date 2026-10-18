@@ -6,3 +6,7 @@ __pycache__/
 
 # disk images for local tests (not versioned)
 *.img
+
+
+# WME DDK (licensed Microsoft, never commit/publish)
+/WMEDDK.ZIP

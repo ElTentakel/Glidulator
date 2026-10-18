@@ -26,9 +26,9 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 
 | Title | Type | Status | Notes |
 |---|---|---|---|
-| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. |
-| Nature95 (Vertigo, 1997) | demo | **runs** | |
-| Formula 1 (Psygnosis) | game demo | **runs** | Into the race, cockpit view. |
+| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. Windows 98 on HW with `GLSMP.VXD`: `timedemo demo1` 38.8 fps on 4 cores (3 workers) against 15.4 fps on one; demo2 37.2, demo3 37.8, FSAA 2x 19.4 fps. |
+| Nature95 (Vertigo, 1997) | demo | **runs** (HW) | Windows 98 on HW with `GLSMP.VXD` (multi-core). |
+| Formula 1 (Psygnosis) | game demo | **runs** (HW) | Into the race, cockpit view; Windows 98 on HW with `GLSMP.VXD` (multi-core). |
 | Operation 3DFX '98 (7 entries) | demo contest | **all run** | No Reality, Chrome II (3 parts), Visions, Planet Cornball (3dfx MiniGL), Daggmask, Oblivion, Scenarios. |
 | Incubation (Blue Byte) | game demo | menus tested | Needs installation; title and menus run through Glide. |
 | Uprising (3DO) | game demo | **runs** (Windows 98) | Crashed on exit: it writes through the LFB pointer after closing Glide. Fixed (the buffers outlive `grSstWinClose`), retest on hardware pending. The game itself does not start under Wine. |
@@ -43,7 +43,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
   only; the shareware/demo data is not accepted.
 - **Glide 3.x**: games that need `glide3x.dll` are out of scope.
 
-## Known issues in 0.9.1
+## Known issues in 0.9.2
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
@@ -64,8 +64,10 @@ look at them:
 - **UEFI machines with CSMWrap**: one laptop (Ryzen 5 5500U) crashed in
   SBEMU's VDPMI build while loading, and Dimension hung under HDPMI32i.
   Not reproducible elsewhere so far.
-- **Windows 95/98/ME** run Glide games on one CPU core; this is a limit of
-  the operating system.
+- **Windows 95/98/ME** run Glide games on one CPU core unless `GLSMP.VXD`
+  lies next to `glide2x.dll`. Multi-core under Windows 9x is new and so far
+  tested in a virtual machine and on one real PC (Core i7-4770T); if a game
+  misbehaves with it, try `GLIDULATOR_SMP=off`.
 
 ## Remarks for testers
 

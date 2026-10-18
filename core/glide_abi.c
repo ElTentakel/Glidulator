@@ -25,8 +25,10 @@
 #include <math.h>
 #include <string.h>
 
+/* Not queried here: platform_core_count() may load drivers or start cores
+ * (Windows 9x VxD), which must not happen inside DllMain. */
 struct glide_state {
-    int core_count;
+    int reserved;
 };
 
 /* See core/glide_internal.h. */
@@ -83,7 +85,6 @@ glide_state *glide_init(void) {
     glide_state *gs = (glide_state *) platform_alloc(sizeof(glide_state));
     if (!gs)
         return NULL;
-    gs->core_count = platform_core_count();
     grGlideInit();
     return gs;
 }
@@ -322,7 +323,6 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     memset(&g_voodoo, 0, sizeof(g_voodoo));
     g_voodoo.type   = VOODOO_1;
     g_voodoo.v_disp = height;
-    glide_renderer_apply(); /* render path and threads, core/renderer.c */
 
     size_t row_bytes = (size_t) width * 2; /* RGB565 */
     size_t fb_needed = row_bytes * (size_t) height * 2; /* colour + depth (16 bit each) */
@@ -377,6 +377,11 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
         free_voodoo_resources();
         return win_open_failed("out of memory");
     }
+    /* Render path and threads (core/renderer.c), only now that every buffer
+     * the workers touch exists: on Windows 9x the workers run on cores whose
+     * TLBs Windows never flushes, so memory must not be mapped while they
+     * run (platform/win98/platform_win32.c). */
+    glide_renderer_apply();
 
     g_width   = width;
     g_height  = height;

@@ -12,6 +12,7 @@ arms)*
 | `GLIDE2X.OVL` | Open Watcom v2 in `/opt/watcom` | Pinned snapshot `2026-09-01-Build`. Warnings are errors (`-we`). |
 | `glide_dos_test.exe` | DJGPP in `/opt/djgpp` | Build check of the core with a third compiler. |
 | AP trampoline | `gcc -m32` + `objcopy` + `xxd` | Generates `build/ovl/ap_tramp.h`. |
+| `GLSMP.VXD` | Open Watcom `wasm` + `wlink` | `form windows vxd dynamic`, exactly one export (the DDB). Hand-written assembly: `wasm` does not accept the DDK's `VMM.INC`, so the DDB layout and VMM service numbers are written out. Trampoline: `gcc -m32` + `objcopy` + `od`, included as `db` lines (`build/win98vxd/aptramp.inc`). |
 
 Watcom specifics the code relies on:
 - Calling-convention and export macros go after the return type
@@ -31,7 +32,8 @@ make ovl              # build/ovl/GLIDE2X.OVL          release
 make ovl-trace        # build/ovl_trace/GLIDE2X.OVL    -dGLIDULATOR_TRACE
 make ovl-debug        # build/ovl_debug/GLIDE2X.OVL    -dGLIDULATOR_TRACE -dGLIDULATOR_DEBUG
 make ovl-all          # all three
-make win98            # build/win98/glide2x.dll (also win98-trace, win98-debug)
+make win98            # build/win98/glide2x.dll (also win98-trace, win98-debug) and the VxD
+make vxd              # build/win98vxd/GLSMP.VXD only
 make win98-all        # all three
 make dist             # release package, see below
 make dos              # DJGPP build check
@@ -52,7 +54,7 @@ The version number lives in `core/include/glidulator/version.h` only.
 `make dist` runs `make test`, builds all six binaries and writes:
 
 - `build/dist/glidulator-<version>.zip`: `BIN\`, `BIN\TRACE\`,
-  `BIN\DEBUG\` (OVL and DLL each, DLLs stripped), the example
+  `BIN\DEBUG\` (OVL, DLL and `GLSMP.VXD` each, DLLs stripped), the example
   `GLIDULAT.CFG` and the texts from `package/` and `docs/` with CRLF line
   ends and 8.3 names, so the folder can be copied to a DOS machine as is.
 - `build/dist/glidulator-<version>-symbols.zip`: the DLLs with symbols and
@@ -110,6 +112,7 @@ in DOSBox. It verifies the picture by screenshot, plus texture memory,
 | `tools/dosvm/run.sh` | Nature in QEMU on FreeDOS with selectable CPU count/topology, XMS driver and OVL. The only way to test multi-core DOS rendering without hardware (TCG timing is not meaningful). Driver `sbemu` runs it under SBEMU with JEMMEX/HDPMI32i and an AC97 card (`SBEMUARGS`, `WAV=1` records the card output); `vdpmi` needs VME and fails under TCG (use `QEMU_OPTS="-enable-kvm -cpu host -smp 4"`). `R3PROBE=AP NATUREONLY=0` runs `r3probe.c` instead: what the DPMI host lets a ring-3 client see (CR0/CR3/CR4, page walk, local APIC, SSE) and a guarded start of the other cores on the host's address space. |
 | `glide_replay <dir> CAPnn.BIN out.png` | Re-render a captured frame; `--list`, `--only N`, `--upto N`, `--compare`, `--difftri`, `--bench N`. Honours all `GLIDULATOR_*` settings. |
 | `tools/dosvm/ovladdr.py <map> <log>` | Map code addresses in a debug log to OVL functions (keep the map of every OVL handed out). |
+| `tools/win98vxd/build.sh` | Windows 9x test programs for `GLSMP.VXD` (`VXDLOAD.EXE`: the VxD alone; `GLMTTEST.EXE`: multi-core against one core through the DLL, pixel by pixel). See its README. |
 
 **Rules of thumb**:
 - When behaviour is unclear, read 3dfx's Glide 2.x source (sezero/glide)

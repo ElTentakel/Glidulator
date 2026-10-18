@@ -11,7 +11,7 @@
  * Skipped (plain output) when: not ring 0 (Windows DOS box), no MTRRs/no
  * WC, MTRRs disabled, no suitable range, or GLIDULATOR_WC=0. */
 
-#include "mtrr_plan.h"
+#include "../common/mtrr_plan.h"
 #include "video.h"
 
 #include "glidulator/platform.h"

@@ -22,7 +22,7 @@ becomes another tentacle of the rasterizer.
 ## Product highlights
 
 - **Drop-in replacement**: `GLIDE2X.OVL` for DOS games (DOS/4G LE DLL) and
-  `glide2x.dll` for Windows 9x games. All 132 Glide 2.x entry points and the
+  `glide2x.dll` (plus `GLSMP.VXD` for multi-core) for Windows 9x games. All 132 Glide 2.x entry points and the
   14 `pci*` helpers of the original runtime are exported with their original
   names; nothing is installed and nothing in the system is changed
   permanently.
@@ -31,7 +31,9 @@ becomes another tentacle of the rasterizer.
   86Box) draws the triangles. Gamma like the Voodoo RAMDAC, 4x4 dithering
   like the chip.
 - **Multi-core rendering**: up to four render workers, also under plain
-  DOS, where Glidulator starts the additional CPU cores itself.
+  DOS and Windows 95/98/ME, where Glidulator starts the additional CPU
+  cores itself (under Windows through the small `GLSMP.VXD` next to the
+  DLL, loaded only while the game runs).
 - **x86 JIT**: per render state, the pixel pipeline is compiled to SSE2
   machine code at run time (about twice as fast as the C path).
 - **Image quality options** (all off by default):
@@ -59,31 +61,28 @@ becomes another tentacle of the rasterizer.
 | Display    | VBE 2.0 linear framebuffer (15/16/24/32 bpp)   | GDI, own full-screen window                          |
 |            | fallback VGA mode 13h                          |                                                      |
 | CPU        | 386+; JIT needs SSE2 (quad core recommended)   | 486+; JIT needs SSE2                                 |
-| Multi-core | yes, without memory manager or with HIMEM only | Windows 9x uses one core; NT/XP and Wine use threads |
+| Multi-core | yes, without memory manager or with HIMEM only | Windows 9x: with `GLSMP.VXD` next to the DLL; NT/XP and Wine use threads |
 
 ## Quick start
 
-The current version is **0.9.1, a preview release**: the tested titles
+The current version is **0.9.2, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-091)). Download the
-package `glidulator-0.9.1.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-092)). Download the
+package `glidulator-0.9.2.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.1:
+New in 0.9.2:
 
-- Windows 98: GLQuake no longer freezes when its first demo starts.
-- `GLIDULATOR_BOARD=rush` reports a Voodoo Rush, for Rush patches such as
-  Tomb Raider's `TUMBRUSH.EXE`.
-- DOS: Print Screen saves the current frame as a BMP
-  (`GLIDULATOR_SCREENSHOT`).
-- DOS: multi-core rendering after Windows 98's "Restart in MS-DOS mode"
-  (Windows leaves the local APIC switched off; Glidulator switches it back
-  on for the game's run). Tested in a virtual machine so far.
-- DOS: the other cores are parked in a BIOS halt loop after the game, which
-  fixes a hang ("internal stack overflow") on some machines after a
-  multi-core run.
-- The on-screen display shows the cores in use and available (`1/2 CORES`)
-  instead of the number of render threads.
+- **Multi-core rendering under Windows 95/98/ME**: copy `GLSMP.VXD` next
+  to `glide2x.dll`. The DLL loads it only while the game runs and starts
+  the other CPU cores through it, as the DOS module does; nothing is
+  installed. GLQuake's `timedemo demo1` on a Core i7-4770T: 38.8 fps
+  instead of 15.4 fps. `GLIDULATOR_SMP=off` turns it off.
+- Windows 9x: write-combining for the display adapter's framebuffer
+  with generic display drivers such as VBEMP (several times faster output;
+  `GLIDULATOR_WC=0` turns it off). Tested in a virtual machine so far.
+- The trace DLL no longer crashes on start with programs whose window
+  class name is long (Nature95).
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 
@@ -94,7 +93,8 @@ New in 0.9.1:
    | Debug   | `BIN\DEBUG\` | Diagnose problems.                           |
 
 2. Copy `GLIDE2X.OVL` (DOS) or `glide2x.dll` (Windows) into the game's
-   directory, replacing the one shipped with the game.
+   directory, replacing the one shipped with the game. Under Windows 9x,
+   copy `GLSMP.VXD` next to `glide2x.dll` for multi-core rendering.
 3. Start the game and select its 3Dfx/Glide renderer.
 4. Optional: copy the example `GLIDULAT.CFG` from the package next to it
    and remove the `#` in front of the settings you want to change. See the

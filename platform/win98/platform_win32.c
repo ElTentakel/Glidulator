@@ -1,7 +1,8 @@
 /* platform.h implementation for Windows 9x (Win32 subset). Only Win32 API
  * that exists on Windows 98, nothing introduced with NT/2000 or later.
- * Render workers are threads; Windows 9x schedules one core only, so none
- * are started there. */
+ * Render workers are threads on NT. Windows 9x schedules one core only;
+ * there the workers run on the other cores through our own dynamically
+ * loaded VxD (GLSMP.VXD next to the DLL, platform/win98/vxd), if present. */
 
 #define _WIN32_WINNT 0x0400
 #include <windows.h>
@@ -10,15 +11,150 @@
 #include "glidulator/platform.h"
 #include "../common/cpu_gcc.h"
 #include "../common/output_rect.h"
+#include "wc_win9x.h"
 
 #include <string.h>
 
-/* Windows 9x always reports 1 (no SMP kernel), so there are no render
- * workers; NT/2000/XP report all cores. */
+/* ---- Windows 9x multi-core through GLSMP.VXD ----
+ * The VxD starts the other cores (APs) and runs our worker function on them
+ * in ring 0, in this process's address space (it copies the process's page
+ * directory entries). Everything a worker touches must stay present with
+ * unchanged page tables: the VxD locks it (_LinPageLock) -- this DLL's
+ * image, msvcrt.dll (memcpy/memset), and every platform_alloc and
+ * platform_alloc_exec block (registered from the start, locked once the VxD
+ * is up). Worker code must not use FS, SEH, TLS or Win32 calls (it does not;
+ * the same code runs without a C runtime in the DOS OVL). Closing the handle,
+ * also implicitly when the process ends or is killed, stops the APs and
+ * unlocks. No VxD, NT, or GLIDULATOR_SMP=off: one core as before. */
+#define VXD_LOCK   8
+#define VXD_UNLOCK 9
+#define VXD_START  4
+#define VXD_RUN    10
+#define VXD_JOB    11
+#define VXD_JOB_DONE  3
+#define VXD_JOB_FAULT 4
+#define VXD_MAX_AP    8
+#define VXD_MAX_BLOCKS 64
+
+static HANDLE g_vxd = INVALID_HANDLE_VALUE;
+static int    g_vxd_state; /* 0 not tried, 1 up, -1 unavailable */
+static int    g_vxd_aps;   /* APs running worker slots */
+static struct {
+    void *p;
+    DWORD n;
+} g_blocks[VXD_MAX_BLOCKS]; /* every platform_alloc(_exec) block */
+static int g_nblocks;
+static int g_vxd_jobs; /* workers currently running on APs */
+
+#ifdef GLIDULATOR_TRACE
+static void vxd_log(const char *fmt, DWORD a, DWORD b) {
+    char line[160];
+    wsprintfA(line, fmt, a, b);
+    platform_log(line);
+}
+#else
+#    define vxd_log(fmt, a, b) ((void) 0)
+#endif
+
+static int vxd_lock(const void *p, DWORD n, int code) {
+    DWORD in[2] = {(DWORD) p, n}, st = 99, r = 0;
+    return DeviceIoControl(g_vxd, (DWORD) code, in, sizeof in, &st, sizeof st, &r, NULL) && st == 0;
+}
+
+static int vxd_lock_image(const void *base) {
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *) base;
+    const IMAGE_NT_HEADERS *nt  = (const IMAGE_NT_HEADERS *) ((const BYTE *) base + dos->e_lfanew);
+    return vxd_lock(base, nt->OptionalHeader.SizeOfImage, VXD_LOCK);
+}
+
+static void block_add(void *p, size_t n) {
+    if (!p)
+        return;
+    /* The APs cache translations Windows never flushes on them (they may
+     * even load them speculatively): memory mapped while workers run can be
+     * seen at its old physical address there. core/glide_abi.c allocates
+     * before it starts the workers; this catches violations. */
+    if (g_vxd_jobs)
+        vxd_log("Multi-core: allocation at %08lX (%lu bytes) while VxD workers run\n", (DWORD) p, (DWORD) n);
+    if (g_nblocks < VXD_MAX_BLOCKS) {
+        g_blocks[g_nblocks].p   = p;
+        g_blocks[g_nblocks++].n = (DWORD) n;
+    } else if (!g_vxd_state)
+        g_vxd_state = -1; /* could not lock it later: stay on one core */
+    if (g_vxd_state > 0 && !vxd_lock(p, (DWORD) n, VXD_LOCK))
+        vxd_log("Multi-core: VxD lock of %08lX failed\n", (DWORD) p, 0);
+}
+
+static void block_remove(void *p) {
+    for (int i = 0; i < g_nblocks; i++)
+        if (g_blocks[i].p == p) {
+            if (g_vxd_state > 0)
+                vxd_lock(p, g_blocks[i].n, VXD_UNLOCK);
+            g_blocks[i] = g_blocks[--g_nblocks];
+            return;
+        }
+}
+
+/* Load the VxD, lock what workers touch, start the APs. Once. */
+static int vxd_up(void) {
+    char  dir[MAX_PATH], path[MAX_PATH + 8], cfg[8];
+    DWORD in[2] = {0, 0}, st[10] = {0}, r = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (g_vxd_state)
+        return g_vxd_state > 0;
+    g_vxd_state = -1;
+    if (!(GetVersion() & 0x80000000u)) /* NT: threads */
+        return 0;
+    if (platform_get_config("GLIDULATOR_SMP", cfg, sizeof cfg) && !strcmp(cfg, "off"))
+        return 0;
+    if (platform_get_config("GLIDULATOR_THREADS", cfg, sizeof cfg) && cfg[0] == '1' && !cfg[1])
+        return 0; /* one core wanted: do not start any */
+    if (!VirtualQuery(&g_vxd, &mbi, sizeof mbi) || /* an address in this DLL */
+        !GetModuleFileNameA((HMODULE) mbi.AllocationBase, dir, sizeof dir))
+        return 0;
+    char *slash = strrchr(dir, '\\');
+    if (!slash)
+        return 0;
+    strcpy(slash + 1, "GLSMP.VXD");
+    if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES ||
+        !GetShortPathNameA(dir, path + 4, MAX_PATH))
+        return 0; /* no VxD next to the DLL: one core */
+    memcpy(path, "\\\\.\\", 4);
+    g_vxd = CreateFileA(path, 0, 0, NULL, 0, FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    if (g_vxd == INVALID_HANDLE_VALUE) {
+        vxd_log("Multi-core: VxD did not load (error %lu)\n", GetLastError(), 0);
+        return 0;
+    }
+    HMODULE crt = GetModuleHandleA("msvcrt.dll");
+    int     ok  = vxd_lock_image(mbi.AllocationBase) && (!crt || vxd_lock_image(crt));
+    for (int i = 0; ok && i < g_nblocks; i++)
+        ok = vxd_lock(g_blocks[i].p, g_blocks[i].n, VXD_LOCK);
+    if (ok)
+        ok = DeviceIoControl(g_vxd, VXD_START, in, sizeof in, st, sizeof st, &r, NULL) && r >= 40 && st[5] == 0 &&
+             st[6] > 0;
+    if (!ok) {
+        vxd_log("Multi-core: VxD start failed (status %lu, %lu usable APs)\n", st[5], st[6]);
+        CloseHandle(g_vxd); /* the VxD unlocks and stops what it did */
+        g_vxd = INVALID_HANDLE_VALUE;
+        return 0;
+    }
+    /* st[6]: APs with a worker slot, one per physical core except the
+     * main core's; Hyper-Threading siblings (st[7]) stay parked */
+    g_vxd_aps   = st[6] > VXD_MAX_AP ? VXD_MAX_AP : (int) st[6];
+    g_vxd_state = 1;
+    vxd_log("Multi-core: Windows 9x VxD up, %lu additional cores (%lu Hyper-Threading siblings unused)\n",
+            (DWORD) g_vxd_aps, st[7]);
+    return 1;
+}
+
+/* NT/2000/XP report all cores. Windows 9x always reports 1 (no SMP
+ * kernel); there the VxD's APs count. */
 int platform_core_count(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    return si.dwNumberOfProcessors > 0 ? (int) si.dwNumberOfProcessors : 1;
+    if (si.dwNumberOfProcessors > 1)
+        return (int) si.dwNumberOfProcessors;
+    return vxd_up() ? 1 + g_vxd_aps : 1;
 }
 
 /* SSE needs the OS to save the XMM registers (FXSAVE, CR4.OSFXSR).
@@ -104,21 +240,30 @@ static HANDLE heap(void) {
 }
 
 void *platform_alloc(size_t n) {
-    return HeapAlloc(heap(), 0, n);
+    void *p = HeapAlloc(heap(), 0, n);
+    block_add(p, n);
+    return p;
 }
 
 void platform_free(void *p) {
-    if (p) HeapFree(heap(), 0, p);
+    if (p) {
+        block_remove(p);
+        HeapFree(heap(), 0, p);
+    }
 }
 
 void *platform_alloc_exec(size_t n) {
-    return VirtualAlloc(NULL, n, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    void *p = VirtualAlloc(NULL, n, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    block_add(p, n);
+    return p;
 }
 
 void platform_free_exec(void *p, size_t n) {
     (void) n;
-    if (p)
+    if (p) {
+        block_remove(p);
         VirtualFree(p, 0, MEM_RELEASE);
+    }
 }
 
 uint64_t platform_time_us(void) {
@@ -129,10 +274,37 @@ uint64_t platform_time_us(void) {
 }
 
 struct platform_worker {
-    HANDLE             thread;
+    HANDLE             thread; /* NULL: runs on VxD AP ap */
+    int                ap;
+    int                killed;
     platform_worker_fn fn;
     void              *arg;
 };
+
+static DWORD vxd_job_state(int ap) {
+    DWORD in = (DWORD) ap, out[5] = {0, 0, 0, 0, 0}, r = 0;
+    DeviceIoControl(g_vxd, VXD_JOB, &in, sizeof in, out, sizeof out, &r, NULL);
+    return out[0];
+}
+
+/* fn(arg) on VxD AP core_id - 1, with this thread's x87 control word and
+ * MXCSR (results bit-identical to rendering on this core). */
+static platform_worker *vxd_spawn(platform_worker *w, int core_id) {
+    WORD  cw;
+    DWORD mxcsr = 0x1f80, st = 99, r = 0;
+    __asm__ volatile("fnstcw %0" : "=m"(cw));
+    if (platform_cpu_features() & PLATFORM_CPU_SSE)
+        __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
+    DWORD in[5] = {(DWORD) (core_id - 1), (DWORD) w->fn, (DWORD) w->arg, cw, mxcsr};
+    w->ap       = core_id - 1;
+    if (!DeviceIoControl(g_vxd, VXD_RUN, in, sizeof in, &st, sizeof st, &r, NULL) || st) {
+        vxd_log("Multi-core: VxD refused worker %lu (status %lu)\n", (DWORD) core_id, st);
+        HeapFree(GetProcessHeap(), 0, w);
+        return NULL;
+    }
+    g_vxd_jobs++;
+    return w;
+}
 
 static DWORD WINAPI worker_main(LPVOID p) {
     platform_worker *w = (platform_worker *) p;
@@ -148,6 +320,10 @@ platform_worker *platform_spawn_worker(int core_id, platform_worker_fn fn, void 
         return NULL;
     w->fn     = fn;
     w->arg    = arg;
+    w->killed = 0;
+    w->thread = NULL;
+    if (g_vxd_state > 0)
+        return core_id >= 1 && core_id <= g_vxd_aps ? vxd_spawn(w, core_id) : (HeapFree(GetProcessHeap(), 0, w), NULL);
     w->thread = CreateThread(NULL, 0, worker_main, w, 0, &tid);
     if (!w->thread) {
         HeapFree(GetProcessHeap(), 0, w);
@@ -159,20 +335,32 @@ platform_worker *platform_spawn_worker(int core_id, platform_worker_fn fn, void 
 void platform_join_worker(platform_worker *w) {
     if (!w)
         return;
-    WaitForSingleObject(w->thread, INFINITE);
-    CloseHandle(w->thread);
+    if (w->thread) {
+        WaitForSingleObject(w->thread, INFINITE);
+        CloseHandle(w->thread);
+    } else {
+        if (!w->killed)
+            for (int spin = 0; vxd_job_state(w->ap) < VXD_JOB_DONE; spin++)
+                Sleep(spin < 16 ? 0 : 1);
+        g_vxd_jobs--;
+    }
     HeapFree(GetProcessHeap(), 0, w);
 }
 
-/* Threads do not die individually, and none can be aborted cleanly. */
+/* Threads do not die individually, and none can be aborted cleanly. A VxD
+ * worker dies on a CPU exception (the VxD parks its core). */
 int platform_worker_failed(platform_worker *w) {
-    (void) w;
-    return 0;
+    return w && !w->thread && vxd_job_state(w->ap) == VXD_JOB_FAULT;
 }
 
+/* A hung VxD worker is abandoned: its core keeps spinning until the handle
+ * is closed (process end), which resets it by INIT; its slot stays busy, so
+ * that core takes no new worker. */
 int platform_kill_worker(platform_worker *w) {
-    (void) w;
-    return 0;
+    if (!w || w->thread)
+        return 0;
+    w->killed = 1;
+    return 1;
 }
 
 /* Vsync: not implemented (would need DirectDraw instead of GDI) */
@@ -321,12 +509,14 @@ static HWND create_own_window(void) {
  * MiniGL size the Glide screen and the clip window from its client
  * rectangle; a minimized window (0 x 0) gives a permanently black
  * picture. */
+/* what: at most 128 characters are logged (keep_on_top passes up to 126).
+ * wsprintfA has no size argument: line must hold the longest result. */
 static void log_window(const char *what, HWND w) {
-    char line[160];
+    char line[256];
     RECT r = { 0, 0, 0, 0 };
     if (w)
         GetClientRect(w, &r);
-    wsprintfA(line, "%s %08lx: minimized %d, visible %d, foreground %d, client %ld x %ld\n", what,
+    wsprintfA(line, "%.128s %08lx: minimized %d, visible %d, foreground %d, client %ld x %ld\n", what,
               (unsigned long) (UINT_PTR) w, w ? (int) IsIconic(w) : -1, w ? (int) IsWindowVisible(w) : -1,
               w && w == GetForegroundWindow(), r.right - r.left, r.bottom - r.top);
     platform_log(line);
@@ -472,9 +662,22 @@ void platform_display_open(int w, int h) {
     while (ShowCursor(FALSE) >= 0 && g_cursor_hidden < 100)
         g_cursor_hidden++;
     g_cursor_hidden++; /* the last call counted as well */
+
+    /* Write-combining for the display adapter's framebuffer (ring 0, only
+     * generic drivers under Windows 9x; GLIDULATOR_WC=0 to skip). Size it
+     * from the current screen mode -- that is what the driver copies into. */
+    {
+        HDC      dc  = GetDC(NULL);
+        unsigned bpp = (unsigned) GetDeviceCaps(dc, BITSPIXEL);
+        ReleaseDC(NULL, dc);
+        uint32_t need = (uint32_t) GetSystemMetrics(SM_CXSCREEN) * (uint32_t) GetSystemMetrics(SM_CYSCREEN) *
+                        ((bpp + 7) / 8);
+        wc_win9x_on(need);
+    }
 }
 
 void platform_display_close(void) {
+    wc_win9x_off();
 #ifdef GLIDULATOR_TRACE
     if (g_trace_hook)
         UnhookWindowsHookEx(g_trace_hook);

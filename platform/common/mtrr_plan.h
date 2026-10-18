@@ -1,5 +1,6 @@
 /* Plan write-combining for the framebuffer with MTRRs (portable, tested in
- * tests/mtrr_test.c; applied in ring 0 by wc_dos.c).
+ * tests/mtrr_test.c; applied in ring 0 by platform/dos_ovl/wc_dos.c and
+ * platform/win98/wc_win9x.c).
  *
  * Firmware typically sets the default type to WB and marks the whole PCI
  * window (e.g. 3-4 GB) UC with a variable MTRR. Where ranges overlap, UC

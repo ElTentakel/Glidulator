@@ -7,7 +7,7 @@
  * parts, the trace/debug variants log it. */
 #define GLIDULATOR_VERSION_MAJOR 0
 #define GLIDULATOR_VERSION_MINOR 9
-#define GLIDULATOR_VERSION_PATCH 1
-#define GLIDULATOR_VERSION       "0.9.1"
+#define GLIDULATOR_VERSION_PATCH 2
+#define GLIDULATOR_VERSION       "0.9.2"
 
 #endif

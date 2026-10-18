@@ -24,7 +24,7 @@ core/                                      portable, no OS knowledge
   |  platform_* calls (core/include/glidulator/platform.h)
   v
 platform/dos_ovl   Open Watcom: DPMI, VBE/VGA, MTRR write-combining, CPU cores
-platform/win98     mingw-w64: GDI output, threads
+platform/win98     mingw-w64: GDI output, threads; vxd/: GLSMP.VXD (Open Watcom)
 platform/linux     reference platform for tests
 platform/dos       DJGPP build check
 ```
@@ -179,8 +179,61 @@ Otherwise rendering stays on one core.
 
 The faulting AP is identified through its stack address.
 
-**Windows/Linux**: workers are threads. Windows 9x reports one core, so
-none are started there.
+**Windows NT/Linux**: workers are threads.
+
+**Multi-core under Windows 9x** (`platform/win98/vxd/glsmp.asm`, caller
+`platform/win98/platform_win32.c`): Windows 95/98/ME schedule one core and
+know nothing of the others. `glide2x.dll` loads the dynamic VxD
+`GLSMP.VXD` from its own directory (`CreateFile("\\.\GLSMP.VXD")` with
+`FILE_FLAG_DELETE_ON_CLOSE`; nothing is installed) at the first core-count
+query and talks to it through `DeviceIoControl`. A VxD runs in ring 0, so
+it starts the APs itself, as the OVL does under DOS:
+
+1. **Address space**: the start call runs in the game's context. The VxD
+   builds the APs' page directory from the live one (PDEs 1-511 are the
+   game's private arena, 512-1023 the shared/system arena) with its own
+   identity map for 0-4 MB (the trampoline). Every buffer a worker touches
+   is locked with `_LinPageLock`: the DLL image, `msvcrt.dll`, and every
+   `platform_alloc`/`platform_alloc_exec` block (the DLL registers them all
+   and locks new ones at once). Locked pages keep their PTEs, so the APs'
+   TLBs, which Windows never flushes, stay valid. A lock also adds page
+   tables that appeared since the start to the APs' directory (only
+   not-present entries, which no TLB caches).
+2. **Rule for the core**: memory the workers can reach, even through stale
+   pointers, is allocated and freed only while no worker runs.
+   `grSstWinOpen` therefore starts the workers after every buffer exists. A
+   waiting worker executes speculatively with the previous session's
+   parameters; with buffers mapped anew under a running worker its TLB
+   kept the old frames on real hardware (wrong pictures from the second
+   session on, page faults in the third).
+3. **Start**: INIT and two Startup IPIs (local APIC switched on only for
+   each IPI, with interrupts off: Windows 98 runs with it off) to a
+   trampoline page below 1 MB (`aptramp.S`). It loads Windows' GDT, the
+   VxD's own IDT and the main core's CR0/CR4, enables paging and jumps to
+   the VxD. Each AP takes a 64 KB stack from the VxD, clears CR0.TS and
+   polls its job slot.
+4. **Choice of cores**: as under DOS, one AP per physical core (CPUID
+   topology); siblings of the main core and of already used cores park at
+   once. All APs are started by broadcast.
+5. **Jobs**: the DLL posts `fn(arg)` with its x87 control word and MXCSR;
+   the AP reloads CR3, loads them and calls the worker (cdecl, flat
+   selectors, so the ring-3 addresses are valid; FS is not the TIB, so
+   worker code uses no SEH/TLS, as in the OVL). A CPU exception lands in the
+   VxD's IDT, which records vector, EIP and CR2 and parks the AP; the DLL
+   reports it to the safety net below.
+6. **Stop**: on the last worker's end, on closing the handle and when
+   Windows tears down a killed process (VWIN32 sends the close before it
+   frees the process's memory): the APs leave their loop, receive INIT and
+   then one more Startup IPI into a hlt loop of the BIOS ROM, so they answer
+   SMIs (a core in wait-for-SIPI does not join the SMI rendezvous; on a
+   Core i7-4770T that made USB-legacy keyboard access under DOS 20 times
+   slower). Locks are released in the locking process's context only.
+7. **Refused**: no MSRs, local APIC in x2APIC mode (its MMIO interface is
+   off), not on the boot core, APIC above 4 GB, or no AP answering: one
+   core, as without the file.
+
+The VxD is hand-written for Open Watcom `wasm`/`wlink` (`form windows vxd
+dynamic`); test programs: `tools/win98vxd/`.
 
 ## 6. Output
 
