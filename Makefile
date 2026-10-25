@@ -332,6 +332,7 @@ dist: test ovl-all win98-all
 	$(CRLF) COPYING > $(DIST)/COPYING.TXT
 	$(CRLF) docs/user-guide.md > $(DIST)/MANUAL.TXT
 	$(CRLF) docs/compatibility.md > $(DIST)/COMPAT.TXT
+	$(CRLF) CHANGES.md > $(DIST)/CHANGES.TXT
 	cd build/dist && zip -q -r -X glidulator-$(VERSION).zip glidulator-$(VERSION) && \
 	    zip -q -r -X glidulator-$(VERSION)-symbols.zip glidulator-$(VERSION)-symbols
 	@ls -l $(DIST).zip $(DIST_SYM).zip

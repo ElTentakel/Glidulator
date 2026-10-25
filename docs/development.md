@@ -55,8 +55,9 @@ The version number lives in `core/include/glidulator/version.h` only.
 
 - `build/dist/glidulator-<version>.zip`: `BIN\`, `BIN\TRACE\`,
   `BIN\DEBUG\` (OVL, DLL and `GLSMP.VXD` each, DLLs stripped), the example
-  `GLIDULAT.CFG` and the texts from `package/` and `docs/` with CRLF line
-  ends and 8.3 names, so the folder can be copied to a DOS machine as is.
+  `GLIDULAT.CFG` and the texts from `package/`, `docs/` and `CHANGES.md`
+  with CRLF line ends and 8.3 names, so the folder can be copied to a DOS
+  machine as is.
 - `build/dist/glidulator-<version>-symbols.zip`: the DLLs with symbols and
   the OVL map files. Keep it for every package handed out; crash addresses
   in a user's `GLIDULAT.LOG` are resolved with it

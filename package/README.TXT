@@ -17,6 +17,16 @@ WHAT IT IS
   Glide are trademarks of their respective owners; Glidulator is not
   affiliated with them.
 
+BUILT ON THE WORK OF OTHERS
+  Glidulator would not exist without these projects and their authors:
+  - PCem by Sarah Walker, as further developed by the 86Box
+    contributors (GPL): the Voodoo rasterizer, texture unit, x86 JIT
+    and video filter at the heart of Glidulator.
+  - MGA-Glide by ranulphus (MIT): the clean-room Glide 2.x ABI
+    description.
+  - The 3dfx Glide 2.x source release (sezero/glide), the reference for
+    driver behaviour.
+
 CONTENTS
   BIN\GLIDE2X.OVL        Glide for DOS games (release variant)
   BIN\GLIDE2X.DLL        Glide for Windows 9x games (release variant)
@@ -26,6 +36,7 @@ CONTENTS
   GLIDULAT.CFG           Example settings, every setting with its default
   MANUAL.TXT             User Guide: installation, all settings, help
   COMPAT.TXT             Tested games and demos, known issues
+  CHANGES.TXT            Changes of every version
   COPYING.TXT            GNU General Public License, version 2
 
 INSTALLATION
@@ -79,7 +90,7 @@ REPORTING PROBLEMS
 LICENSE AND SOURCE
   Glidulator is free software under the GNU General Public License,
   version 2 or later (COPYING.TXT). Source code, documentation and
-  credits (PCem/86Box rasterizer, MGA-Glide ABI description):
+  detailed credits:
   https://github.com/ElTentakel/Glidulator
 
   No tentacles were harmed in the making of this software.

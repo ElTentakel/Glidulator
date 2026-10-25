@@ -19,6 +19,21 @@ becomes another tentacle of the rasterizer.
 > actual 90s hardware vendors, living or bankrupt, is entirely intentional
 > and affectionate. See [Trademarks](#trademarks).
 
+## Built on the work of others
+
+The GL-1 would not exist without these projects and the people behind them:
+
+- **PCem** by **Sarah Walker**, as further developed by the **86Box**
+  contributors (GPL): the Voodoo rasterizer, texture unit, x86 JIT and
+  video filter at the heart of Glidulator are their emulation. See
+  [core/rasterizer/ATTRIBUTION.md](core/rasterizer/ATTRIBUTION.md).
+- **MGA-Glide** by **ranulphus** (MIT): the clean-room Glide 2.x ABI
+  description and the LE loader used in tests. See
+  [abi/ATTRIBUTION.md](abi/ATTRIBUTION.md) and
+  [tools/leload/ATTRIBUTION.md](tools/leload/ATTRIBUTION.md).
+- The **3dfx Glide 2.x source release** (sezero/glide), the reference for
+  driver behaviour.
+
 ## Product highlights
 
 - **Drop-in replacement**: `GLIDE2X.OVL` for DOS games (DOS/4G LE DLL) and
@@ -27,8 +42,8 @@ becomes another tentacle of the rasterizer.
   names; nothing is installed and nothing in the system is changed
   permanently.
 - **Faithful rendering**: Glide calls program the same Voodoo registers the
-  original driver did, and a register-accurate rasterizer (ported from
-  86Box) draws the triangles. Gamma like the Voodoo RAMDAC, 4x4 dithering
+  original driver did, and a register-accurate rasterizer (PCem/86Box,
+  see above) draws the triangles. Gamma like the Voodoo RAMDAC, 4x4 dithering
   like the chip.
 - **Multi-core rendering**: up to four render workers, also under plain
   DOS and Windows 95/98/ME, where Glidulator starts the additional CPU
@@ -71,7 +86,7 @@ run, a few known issues remain (see
 package `glidulator-0.9.2.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.2:
+New in 0.9.2 (all versions: [CHANGES.md](CHANGES.md)):
 
 - **Multi-core rendering under Windows 95/98/ME**: copy `GLSMP.VXD` next
   to `glide2x.dll`. The DLL loads it only while the game runs and starts
@@ -80,7 +95,7 @@ New in 0.9.2:
   instead of 15.4 fps. `GLIDULATOR_SMP=off` turns it off.
 - Windows 9x: write-combining for the display adapter's framebuffer
   with generic display drivers such as VBEMP (several times faster output;
-  `GLIDULATOR_WC=0` turns it off). Tested in a virtual machine so far.
+  `GLIDULATOR_WC=0` turns it off). Also runs on real hardware (Core i7-4770T).
 - The trace DLL no longer crashes on start with programs whose window
   class name is long (Nature95).
 
@@ -140,20 +155,12 @@ make dosbox-test                     # load the OVL in DOSBox and check the pict
 make dist                            # release package in build/dist/
 ```
 
-## License and credits
+## License
 
 Glidulator is free software under the **GNU General Public License,
-version 2 or later** (see `COPYING`), as required by the rasterizer it is
-built on. It stands on the shoulders of:
-
-- **PCem** (Sarah Walker), as further developed in **86Box** (86Box contributors), GPL:
-  Voodoo rasterizer, texture unit, x86 JIT and video filter. See
-  [core/rasterizer/ATTRIBUTION.md](core/rasterizer/ATTRIBUTION.md).
-- **MGA-Glide** (ranulphus, MIT): clean-room Glide 2.x ABI description and
-  the LE loader used in tests. See [abi/ATTRIBUTION.md](abi/ATTRIBUTION.md)
-  and [tools/leload/ATTRIBUTION.md](tools/leload/ATTRIBUTION.md).
-- The 3dfx Glide 2.x source release (sezero/glide), used as the reference
-  for driver behaviour.
+version 2 or later** (see `COPYING`), as required by the PCem/86Box
+rasterizer it is built on (see
+[Built on the work of others](#built-on-the-work-of-others)).
 
 ## Trademarks
 
