@@ -59,14 +59,16 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.2
-  - Windows 95/98/ME: multi-core rendering. Copy BIN\GLSMP.VXD next to
-    GLIDE2X.DLL; it is loaded only while the game runs and starts the
-    other CPU cores (GLQuake on a Core i7-4770T: 38.8 instead of 15.4
-    frames per second). GLIDULATOR_SMP=off turns it off.
-  - Windows 9x: write-combining for the framebuffer with generic display
-    drivers such as VBEMP (faster output; GLIDULATOR_WC=0 turns it off).
-  - The trace DLL no longer crashes on start with Nature95.
+NEW IN 0.9.3
+  - Mipmap dithering as on the Voodoo board (GLIDULATOR_LOD_DITHER=
+    auto|1|0): no hard bands between mipmap levels.
+  - The OSD shows how the other cores run (SMP RING0, PAGING, FLAT,
+    GLSMP, THREADS or OFF). GLIDULATOR_SCREENSHOT=2 includes the OSD.
+  - Hyper-Threading with the BIOS option "CPUID Limit" is recognised
+    (DOS and Windows 9x); siblings no longer count as cores.
+  - 8.4 MB less memory for the texture cache: Pyl loads its levels
+    without HDPMI32i.
+  - Shared triangle edges are drawn exactly once (start-up logo).
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -74,12 +76,14 @@ KNOWN ISSUES
   - SBEMU (sound for DOS on modern machines): works with the DPMI host
     HDPMI32i (several cores, JIT). The VDPMI pre-release is experimental
     (Dimension hangs).
-  - Rasterizer: single pixels can stay open on shared triangle edges.
   - Glide functions without effect: grAA* (anti-aliased primitives),
     guMP*, guTexCreateColorMipMap. No tested title uses them.
   - Windows 95/98/ME: multi-core rendering (GLSMP.VXD) is new, tested in
     a virtual machine and on one real PC. If a game misbehaves with it,
     set GLIDULATOR_SMP=off or remove GLSMP.VXD.
+  - Hyper-Threading with the BIOS option "CPUID Limit": the detection is
+    new and tested in a virtual machine only. Please report if the OSD
+    shows more cores than the CPU has.
 
 REPORTING PROBLEMS
   Use the Debug variant, reproduce the problem and attach GLIDULAT.LOG

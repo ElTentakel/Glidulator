@@ -174,19 +174,24 @@ static void quad2d(float ax, float ay, float bx, float by, float cx, float cy, f
     tri2d(&a, &c, &d);
 }
 
-/* Disc as a fan; drawn twice, the second fan turned by half a segment:
- * single pixels the rasterizer leaves open on a shared fan edge (seen in
- * the Linux test) are covered by the other fan. */
-static void disc2d(float cx, float cy, float r, unsigned centre, unsigned edge, int twice) {
-    for (int pass = 0; pass <= twice; pass++)
-        for (int i = 0; i < 32; i++) {
-            float    a0 = 6.2831853f * ((float) i + 0.5f * (float) pass) / 32, a1 = a0 + 6.2831853f / 32;
-            GrVertex m, p, q;
-            vert2d(&m, cx, cy, centre);
-            vert2d(&p, cx + r * glide_cosf(a0), cy + r * glide_sinf(a0), edge);
-            vert2d(&q, cx + r * glide_cosf(a1), cy + r * glide_sinf(a1), edge);
-            tri2d(&m, &p, &q);
-        }
+/* Angle of corner i of a ring of n segments. Neighbouring segments must
+ * compute their shared corner from the same value: with a1 = a0 + step the
+ * two ends differ in the last bit, the edge is not shared and single pixels
+ * stay open or are drawn twice. */
+static float ring_angle(int i, int n) {
+    return 6.2831853f * (float) (i % n) / (float) n;
+}
+
+/* Disc as a fan */
+static void disc2d(float cx, float cy, float r, unsigned centre, unsigned edge) {
+    for (int i = 0; i < 32; i++) {
+        float    a0 = ring_angle(i, 32), a1 = ring_angle(i + 1, 32);
+        GrVertex m, p, q;
+        vert2d(&m, cx, cy, centre);
+        vert2d(&p, cx + r * glide_cosf(a0), cy + r * glide_sinf(a0), edge);
+        vert2d(&q, cx + r * glide_cosf(a1), cy + r * glide_sinf(a1), edge);
+        tri2d(&m, &p, &q);
+    }
 }
 
 /* Tentacle centre line and radius: rises (h 0..1) leaning towards the
@@ -247,7 +252,7 @@ static void seascape(float t) {
 
     /* moon: a halo fading into the sky (cut at the horizon), the disc */
     for (int i = 0; i < 32; i++) {
-        float    a0 = 6.2831853f * (float) i / 32, a1 = a0 + 6.2831853f / 32;
+        float    a0 = ring_angle(i, 32), a1 = ring_angle(i + 1, 32);
         float    r  = MOON_R * 2.8f;
         float    ya = MOON_Y + r * glide_sinf(a0), yb = MOON_Y + r * glide_sinf(a1);
         GrVertex m, p, q;
@@ -260,7 +265,7 @@ static void seascape(float t) {
         vert2d(&q, MOON_X + r * glide_cosf(a1), yb, behind(yb - 0.01f));
         tri2d(&m, &p, &q);
     }
-    disc2d(MOON_X, MOON_Y, MOON_R, 0xeef6cc, 0xb0c090, 1);
+    disc2d(MOON_X, MOON_Y, MOON_R, 0xeef6cc, 0xb0c090);
 
     /* reflection: streaks get wider, thicker and dimmer towards the
      * viewer, each shimmering on its own */
@@ -299,7 +304,7 @@ static void seascape(float t) {
         float    r = 20.0f + 80.0f * age, fade = 1.0f - age / 2.0f;
         unsigned c = mix(water(TT_Y), 0xb0c0a0, 0.7f * fade);
         for (int i = 0; i < 40; i++) {
-            float a0 = 6.2831853f * (float) i / 40, a1 = a0 + 6.2831853f / 40;
+            float a0 = ring_angle(i, 40), a1 = ring_angle(i + 1, 40);
             float c0 = glide_cosf(a0), s0 = glide_sinf(a0) * 0.2f, c1 = glide_cosf(a1), s1 = glide_sinf(a1) * 0.2f;
             float d  = 2.4f;
             quad2d(TT_X + r * c0, TT_Y + r * s0, TT_X + r * c1, TT_Y + r * s1, TT_X + (r + d) * c1,

@@ -18,6 +18,12 @@ extern "C" {
  * calling one (1 = no others). */
 int platform_core_count(void);
 
+/* How the platform runs workers on other cores, for the OSD: "RING0",
+ * "PAGING", "FLAT" (DOS OVL, see GLIDULATOR_SMP), "GLSMP" (Windows 9x
+ * VxD), "THREADS" (Linux, Windows NT/XP, Wine); NULL if it cannot. Only
+ * meaningful after platform_core_count(). */
+const char *platform_smp_mode(void);
+
 void *platform_alloc(size_t n);
 void platform_free(void *p);
 

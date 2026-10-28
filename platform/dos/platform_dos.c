@@ -17,6 +17,10 @@ int platform_core_count(void) {
     return 1;
 }
 
+const char *platform_smp_mode(void) {
+    return 0;
+}
+
 /* Never SSE: whether the DPMI host (CWSDPMI, Windows DOS box, ...) sets
  * CR4.OSFXSR cannot be checked from ring 3, and without it every SSE
  * instruction raises #UD. */

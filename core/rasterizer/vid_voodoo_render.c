@@ -80,7 +80,24 @@ typedef struct voodoo_state_t {
     int lod_frac[2];
 
     int stipple;
+
+    int real_y; /* GLIDULATOR: screen line being drawn, for the LOD dither */
 } voodoo_state_t;
+
+/* GLIDULATOR: LOD dither (textureMode bit 4, Glide GR_MIPMAP_NEAREST_DITHER),
+ * not implemented in 86Box. As on the board: a 4x4 ordered dither value,
+ * 0..15 in sixteenths of a mipmap level, is added to the LOD (8.8 fixed
+ * point) before clamping, so the edge between two levels becomes a dither
+ * pattern. Perspective-textured triangles only, in the C path and through
+ * vj_persp_fetch_dither() in the JIT. */
+#define TEXTUREMODE_LOD_DITHER (1 << 4)
+static const uint8_t lod_dither_4x4[4][4] = {
+    { 0, 8, 2, 10 },
+    { 12, 4, 14, 6 },
+    { 3, 11, 1, 9 },
+    { 15, 7, 13, 5 }
+};
+#define LOD_DITHER(state) (lod_dither_4x4[(state)->real_y & 3][(state)->x & 3] << 4)
 
 #ifdef ENABLE_VOODOO_RENDER_LOG
 int voodoo_render_do_log = ENABLE_VOODOO_RENDER_LOG;
@@ -509,6 +526,8 @@ voodoo_tmu_fetch(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *stat
         int w_reciprocal_log2 = fastlog(_w);
 
         state->lod = state->tmu[tmu].lod + (w_reciprocal_log2 - (W_RECIPROCAL_LOG2_OFFSET << 8));
+        if (params->textureMode[tmu] & TEXTUREMODE_LOD_DITHER)
+            state->lod += LOD_DITHER(state);
     } else {
         if (tmu) {
             state->tex_s = (int32_t) (state->tmu1_s >> (14 + 14));
@@ -789,6 +808,12 @@ vj_persp_fetch(voodoo_state_t *state, int tmu)
     state->tex_t = (int32_t) (((((t + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
     return fastlog(_w) - (W_RECIPROCAL_LOG2_OFFSET << 8);
 }
+
+static int VOODOO_JIT_CALL
+vj_persp_fetch_dither(voodoo_state_t *state, int tmu)
+{
+    return vj_persp_fetch(state, tmu) + LOD_DITHER(state);
+}
 #    include "vid_voodoo_codegen_x86.h"
 #endif
 
@@ -969,6 +994,7 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
             real_y = y_origin - (real_y >> 4);
         else
             real_y >>= 4;
+        state->real_y = real_y;
 
         if (SLI_ENABLED) {
             if (((real_y >> 1) & voodoo->odd_even_mask) != odd_even)

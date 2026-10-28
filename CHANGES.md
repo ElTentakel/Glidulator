@@ -5,9 +5,32 @@
 Newest release first. Known issues of the current release:
 [docs/compatibility.md](docs/compatibility.md).
 
-## Unreleased
+## 0.9.3 (2026-10-28, preview)
 
-- No changes yet.
+- Credits for PCem/86Box, MGA-Glide and the Glide source release moved
+  to the top of the README and into the package README.TXT.
+- **`GLIDULATOR_SCREENSHOT=2`**: screenshots include the OSD (user wish).
+- **OSD shows how the other cores run**: `SMP RING0`, `PAGING`, `FLAT`
+  (DOS), `GLSMP` (Windows 9x), `THREADS` (Windows NT/XP, Wine) or `OFF`
+  (user wish).
+- **Hyper-Threading with the BIOS option "CPUID Limit"** (DOS and Windows
+  9x): the siblings were counted as cores of their own, so workers shared
+  a core with each other or with the game (4 cores + HT: 5/8 cores, slower
+  than 4/4). Intel CPUs from Nehalem on are now recognised correctly with
+  the limit on (tester report, VOGONS).
+- **8.4 MB less memory**: the texture cache no longer reserves an unused
+  256x256 area per slot (about 19 MB instead of 28 MB in total). Pył
+  failed with `CH_C3DFX[80]` when loading a level without HDPMI32i; it now
+  loads (tester report, VOGONS).
+- **Mipmap dithering** (`GLIDULATOR_LOD_DITHER=auto|1|0`): the board's
+  LOD dither was not emulated, so games asking for
+  `GR_MIPMAP_NEAREST_DITHER` showed hard bands between mipmap levels. Now
+  the level edge becomes a 4x4 dither pattern as on the Voodoo; `1` forces
+  it for every game, like the option of 3dfx's drivers (user wish).
+- The rasterizer's known issue "single pixels open on shared triangle
+  edges" is withdrawn: shared edges are drawn exactly once. The gaps came
+  from the start-up logo, whose fans computed the same corner twice with
+  slightly different results. The logo is fixed; a new test checks fans.
 
 ## 0.9.2 (2026-10-18, preview)
 

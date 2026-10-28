@@ -119,8 +119,9 @@ codegen_texture_fetch(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *pa
         addbyte(0x6a); /*PUSH tmu*/
         addbyte(tmu);
         addbyte(0x57); /*PUSH EDI (state)*/
-        addbyte(0xb8); /*MOV EAX, vj_persp_fetch*/
-        addlong((uint32_t) (uintptr_t) vj_persp_fetch);
+        addbyte(0xb8); /*MOV EAX, vj_persp_fetch(_dither)*/
+        /* GLIDULATOR: the dither variant adds the LOD dither (vid_voodoo_render.c) */
+        addlong((uint32_t) (uintptr_t) ((params->textureMode[tmu] & TEXTUREMODE_LOD_DITHER) ? vj_persp_fetch_dither : vj_persp_fetch));
         addbyte(0xff); /*CALL EAX*/
         addbyte(0xd0);
         addbyte(0x83); /*ADD ESP, 8*/

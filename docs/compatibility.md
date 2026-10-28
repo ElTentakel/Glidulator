@@ -19,6 +19,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 | Grand Theft Auto (DMA Design, 1997) | game demo | **runs** | `guTex*` texture management, LFB locks. |
 | Burnout: Championship Drag Racing (Bethesda, 1998) | game demo | **runs** | Fog, lines, motion blur through the LFB. |
 | Tomb Raider (Core Design, 1996), Voodoo Rush patch `TUMBRUSH.EXE` | game | **runs** (QEMU/KVM, FreeDOS) | Needs `GLIDULATOR_BOARD=rush`, otherwise it quits after the intro videos. Title menu and demo mode tested with the full CD in the drive (LaserLok: DOSBox fails with error 607). |
+| Pył (Optimus Nexus, 1998) | game demo | **runs** (DOSBox; menu in QEMU/KVM) | Start with `PYLDEMO -V1` (3Dfx; the Windows setup program writes the same choice). Needs about 32 MB for itself on top of Glidulator; before 0.9.3 loading a level failed with `CH_C3DFX[80]` (out of memory: its DOS/4GW 1.97 reported the same 20 MB free with 63 and 127 MB of RAM). In QEMU the menu ignores mouse clicks. |
 | Archimedean Dynasty (Massive, 1996) | game demo, 3Dfx patch | menus tested | Mission start needs mouse operation, not automated. |
 | Yume 2 (inf, 1998) | demo | not tested | Crashes in DOSBox before the first Glide call (not Glidulator-related). |
 
@@ -43,15 +44,13 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
   only; the shareware/demo data is not accepted.
 - **Glide 3.x**: games that need `glide3x.dll` are out of scope.
 
-## Known issues in 0.9.2
+## Known issues in 0.9.3
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
 
 - **Uprising**: the crash on exit is fixed, but the fix has not been
   confirmed on real hardware yet.
-- **Rasterizer**: single pixels can stay open on the shared edges of a
-  triangle fan (seen with 24 triangles around one centre point).
 - **Glide functions without effect**: Glide's own anti-aliased primitives
   (`grAA*`), `guMP*` (multi-pass texturing helpers) and
   `guTexCreateColorMipMap`. `grLfbLock` with `GR_ORIGIN_LOWER_LEFT`
@@ -68,6 +67,10 @@ look at them:
   lies next to `glide2x.dll`. Multi-core under Windows 9x is new and so far
   tested in a virtual machine and on one real PC (Core i7-4770T); if a game
   misbehaves with it, try `GLIDULATOR_SMP=off`.
+- **Hyper-Threading with "CPUID Limit"**: the detection is new in 0.9.3
+  and so far tested in a virtual machine only. If the OSD shows more
+  cores than the CPU has (for example `5/8 CORES` on a quad core), please
+  report it with the trace log.
 
 ## Remarks for testers
 

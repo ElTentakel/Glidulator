@@ -1,8 +1,9 @@
 /* Screenshot: when the platform reports its screenshot key (DOS OVL: Print
  * Screen, platform_screenshot_key()), the frame of the next grBufferSwap
  * is saved as SHOTnnnn.BMP in the current directory: 24-bit BMP in the
- * game's render resolution, with the output gamma, without the OSD,
- * scaling or the video filter. */
+ * game's render resolution, with the output gamma, without the OSD
+ * (GLIDULATOR_SCREENSHOT=2: with it, core/osd.c), scaling or the video
+ * filter. */
 
 #include "glidulator/platform.h"
 #include "glidulator/trace.h"

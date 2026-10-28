@@ -125,6 +125,7 @@ glidulator_fsaa = 2      anything after the value is ignored
 | Fill the whole screen | `GLIDULATOR_SCALE=stretch` |
 | DOS game runs too fast | `GLIDULATOR_VSYNC=1` |
 | Smoother edges | `GLIDULATOR_FSAA=auto` |
+| Visible bands where textures switch to a smaller mipmap | `GLIDULATOR_LOD_DITHER=1` |
 | The 1997 look | `GLIDULATOR_VOODOO_FILTER=1`, `GLIDULATOR_SPLASH=original` with `GLIDULATOR_SPLASH_FILE`, `GLIDULATOR_CRT=1` |
 | Voodoo Rush version of a game quits after the intro | `GLIDULATOR_BOARD=rush` |
 | Rule out multi-core or JIT problems | `GLIDULATOR_THREADS=1`, `GLIDULATOR_RENDERER=c` |
@@ -152,7 +153,7 @@ the Windows DLL.
 | `GLIDULATOR_VGA_DITHER` | `blue`, `bayer`, `off` | `blue` | DOS mode 13h (256 colours): how the picture is reduced. Every pixel first averages the area it covers, which removes the Voodoo's own dither pattern. `blue` then dithers with a fine, irregular pattern that stays still from frame to frame, `bayer` with the classic regular pattern, `off` rounds to the nearest colour (visible bands). |
 | `GLIDULATOR_SCALE` | `aspect`, `stretch`, `integer`, `none` | `aspect` | How the picture fills the screen. `aspect` keeps 4:3 for every game resolution, as Voodoo boards displayed it, with black borders. |
 | `GLIDULATOR_WC` | `0`, `1` | `1` | Enable write-combining for the video memory while the game runs. This is several times faster on real hardware. The original MTRRs are restored on exit. Windows 95/98/ME: only with generic display drivers (VBEMP and the like); real drivers set it themselves. |
-| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `1/2 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS one per physical core, under Windows NT/2000/XP every logical processor, under Windows 9x always 1), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
+| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `1/2 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS one per physical core, under Windows NT/2000/XP every logical processor, under Windows 9x always 1), how the other cores run (`SMP RING0`, `PAGING` or `FLAT` under DOS, see `GLIDULATOR_SMP`; `SMP GLSMP` under Windows 9x with `GLSMP.VXD`; `SMP THREADS` under Windows NT/2000/XP and Wine; `SMP OFF` = one core), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
 
 ### Image quality
 
@@ -163,6 +164,7 @@ bit-identical to plain rendering.
 |---|---|---|---|
 | `GLIDULATOR_FSAA` | `0`, `2`, `4`, `auto` | `0` | Full-scene anti-aliasing like the Voodoo 5: every triangle is drawn 2 or 4 times with sub-pixel offsets (rotated grid) and averaged. It costs about 2x or 4x the render time. Menus, HUDs and videos drawn by the game directly into the framebuffer stay sharp. `auto` switches between off, 2x and 4x to stay at 60 frames per second. |
 | `GLIDULATOR_AA_POST` | `0`, `1` | `0` | Cheap edge smoothing after rendering: pixels at depth discontinuities are blended with their neighbour. It costs about 1-2 ms per frame. It does not smooth alpha-tested edges, and pixels the game wrote directly are left untouched. |
+| `GLIDULATOR_LOD_DITHER` | `auto`, `0`, `1` | `auto` | Mipmap dithering, as the Voodoo board does it: the edge between two mipmap levels becomes a 4x4 dither pattern instead of a visible band. `auto` dithers when the game asks for it (`GR_MIPMAP_NEAREST_DITHER` with `GR_HINT_ALLOW_MIPMAP_DITHER`), `1` always (like the "mipmap dithering" option of 3dfx's drivers), `0` never. Perspective-corrected textures only. |
 | `GLIDULATOR_VOODOO_FILTER` | `0`, `1`, `RRGGBB` | `0` | The video output filter of the Voodoo Graphics ("Voodoo look"). Neighbouring pixels that differ only by dithering are averaged, edges stay. `1` uses 3dfx's default threshold `080408`; a hex value sets your own. Output then uses 24/32-bit screen modes. It costs about 4-5 ms per frame at 640x480. |
 
 The options can be combined. The on-screen display is not filtered.
@@ -172,7 +174,7 @@ The options can be combined. The on-screen display is not filtered.
 | Setting | Values | Default | Effect |
 |---|---|---|---|
 | `GLIDULATOR_SPLASH` | `gl1`, `off`, `original` | `gl1` | Logo after the first `grSstWinOpen`. `gl1`: the Glidulator animation (4.1 s): a moonlit night sea, a tentacle rising out of the water in front of the moon, and the chrome GLIDULATOR wordmark with a glint running along it. Skipped under DOS without a clock (no TSC, e.g. DOSBox). `original`: 3dfx's own spinning-logo animation (2.5 s), read from an original Glide 2.x file (see below). (The older value `crt` still means `GLIDULATOR_CRT=1` without a logo.) |
-| `GLIDULATOR_SCREENSHOT` | `0`, `1` | `1` | DOS: Print Screen saves the next frame as `SHOT0000.BMP`, `SHOT0001.BMP`, ... in the current directory (24-bit BMP in the game's render resolution, with gamma, without OSD, scaling or video filter). While the game runs, the OVL puts a small handler in front of the game's keyboard handler; it only looks at the key and passes everything on. `0` leaves the keyboard alone. Under Windows, Print Screen stays Windows' own (desktop to the clipboard). |
+| `GLIDULATOR_SCREENSHOT` | `0`, `1`, `2` | `1` | DOS: Print Screen saves the next frame as `SHOT0000.BMP`, `SHOT0001.BMP`, ... in the current directory (24-bit BMP in the game's render resolution, with gamma, without OSD, scaling or video filter). `2`: the same, but with the OSD (`GLIDULATOR_OSD=1`) in the picture, for example to share frame rates. While the game runs, the OVL puts a small handler in front of the game's keyboard handler; it only looks at the key and passes everything on. `0` leaves the keyboard alone. Under Windows, Print Screen stays Windows' own (desktop to the clipboard). |
 | `GLIDULATOR_CRT` | `0`, `1` | `0` | Monitor effect: every switch to the Voodoo picture looks like an analog monitor locking onto a new signal (the picture rolls, lines bend, brightness settles, a little static), and switching back loses sync the same way. Works with or without a logo. Under DOS the switch back is skipped if the program has already returned to text mode itself. |
 | `GLIDULATOR_SPLASH_FILE` | path without spaces | - | An original Voodoo Graphics `GLIDE2X.OVL` or `glide2x.dll` (as shipped with many games; either file works on both systems). Glidulator reads only the animation's model and textures from it and draws them itself; nothing from the file is executed. If the file is missing or contains no splash data, the Glidulator animation plays instead. |
 
@@ -199,7 +201,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.2 (trace)
+Glidulator GL-1 0.9.3 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame
@@ -225,8 +227,8 @@ The Debug variant additionally:
 |---|---|
 | The game says no 3Dfx card was found | Make sure the game uses our `GLIDE2X.OVL`/`glide2x.dll` (game directory) and its 3Dfx option. Statically linked Glide games cannot use Glidulator. |
 | DOS: `DOS/16M error: [40]` | Boot without memory manager (see Installation). |
-| DOS: only one core used, OSD shows `C` instead of `JIT` | A memory manager or the Windows DOS box is active (no ring 0). Boot plain DOS. |
-| Windows 9x: only one core used (OSD `1/1 CORE`) | `GLSMP.VXD` must lie next to `glide2x.dll`. The Trace log's `Multi-core:` line gives the reason otherwise (e.g. x2APIC mode). |
+| DOS: only one core used (OSD `SMP OFF`), OSD shows `C` instead of `JIT` | A memory manager or the Windows DOS box is active (no ring 0). Boot plain DOS. |
+| Windows 9x: only one core used (OSD `1/1 CORE`, `SMP OFF`) | `GLSMP.VXD` must lie next to `glide2x.dll`. The Trace log's `Multi-core:` line gives the reason otherwise (e.g. x2APIC mode). |
 | Windows 9x: problems that go away with one core | Set `GLIDULATOR_SMP=off` or remove `GLSMP.VXD`, and report it with the Trace log. |
 | Picture too slow | Check the OSD. With FSAA or the video filter on, turn them off. Under DOS, make sure write-combining is active (Trace log "Write-Combining"). |
 | Black borders | Expected with `GLIDULATOR_SCALE=aspect` on non-4:3 screens. Use `stretch` if you prefer. |

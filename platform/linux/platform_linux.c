@@ -20,6 +20,10 @@ int platform_core_count(void) {
     return n > 0 ? (int) n : 1;
 }
 
+const char *platform_smp_mode(void) {
+    return "THREADS";
+}
+
 /* Linux saves the SSE registers (FXSAVE/XSAVE). */
 unsigned platform_cpu_features(void) {
     return cpu_features_gcc(1);

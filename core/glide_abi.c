@@ -54,8 +54,12 @@ static GrErrorCallbackFnc_t g_error_callback = 0;
  * texture_last_removed before its first comparison, so even the first
  * upload lands in slot 1. All TEX_CACHE_MAX slots of TMU0 are allocated as
  * 86Box's voodoo_init() does; TMU1 is unused (no dual TMUs) but needs slot 0
- * for the same pointer arithmetic. */
-#define TEX_CACHE_SLOT_WORDS (256 * 256 + 256 * 256 + 128 * 128 + 64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2)
+ * for the same pointer arithmetic. A slot holds exactly the mip chain laid
+ * out by texture_offset[] (its last entry is the end); 86Box reserves a
+ * second, never used 256x256 area, which cost 8.4 MB over all slots: too
+ * much for Pyl under its DOS/4GW 1.97 (fatal error CH_C3DFX[80] when
+ * loading a level). */
+#define TEX_CACHE_SLOT_WORDS (texture_offset[LOD_MAX + 2] + 1)
 
 /* Buffers a grLfbLock() pointer can point into (colour/depth buffer,
  * shadow buffer). On a Voodoo that pointer addresses the board and stays
@@ -377,12 +381,6 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
         free_voodoo_resources();
         return win_open_failed("out of memory");
     }
-    /* Render path and threads (core/renderer.c), only now that every buffer
-     * the workers touch exists: on Windows 9x the workers run on cores whose
-     * TLBs Windows never flushes, so memory must not be mapped while they
-     * run (platform/win98/platform_win32.c). */
-    glide_renderer_apply();
-
     g_width   = width;
     g_height  = height;
     g_clip_left = g_clip_top = 0;
@@ -397,6 +395,14 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     platform_display_open(width, height);
     glide_osd_open(); /* after the display: needs its size */
     read_vsync_cfg();
+    glide_tex_read_cfg();
+    /* Render path and threads (core/renderer.c), only once every buffer of
+     * this window exists, the display's output buffer and tables included:
+     * on Windows 9x the workers run on cores whose TLBs Windows never
+     * flushes, so memory must not be mapped while they run
+     * (platform/win98/platform_win32.c). The start-up animation below
+     * already renders through them. */
+    glide_renderer_apply();
     /* Start-up animation (GLIDULATOR_SPLASH); it uses Glide like a
      * program, so the program then gets the initial state again (the
      * saved state also covers what initial_state() leaves alone, e.g. the

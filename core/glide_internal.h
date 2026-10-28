@@ -178,7 +178,7 @@ void glide_osd_close(void);
 void glide_present(int vsync);
 
 /* Screenshot (core/screenshot.c). glide_screenshot_frame(): glide_present,
- * before the OSD; saves fb as SHOTnnnn.BMP if platform_screenshot_key()
+ * before the OSD (GLIDULATOR_SCREENSHOT=2: after it); saves fb as SHOTnnnn.BMP if platform_screenshot_key()
  * reports a key press. glide_screenshot_bmp(): w x h RGB565 -> 24-bit BMP
  * (bottom-up, rows padded to 4 bytes) through lut (NULL = none) into out;
  * returns the file size, out = NULL only computes it. */
@@ -196,6 +196,7 @@ void glide_set_origin(GrOriginLocation_t origin);
  * valid = 0: none. glide_tex_set_source() does NOT recompute tLOD and
  * textureMode, they are restored from the register image anyway. */
 void glide_tex_get_source(GrTexInfo *info, int *valid);
+void glide_tex_read_cfg(void); /* GLIDULATOR_LOD_DITHER, read by grSstWinOpen */
 void glide_tex_set_source(const GrTexInfo *info, int valid);
 
 /* Round to nearest, halves away from zero. Not lrint()/llrint(): Open

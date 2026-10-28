@@ -645,9 +645,20 @@ static unsigned smt_shift(void) {
         if ((r[1] & 0xffff) && ((r[2] >> 8) & 0xff) == 1) /* level 0 = SMT */
             return r[0] & 31;
     }
+    unsigned v[4];
+    cpuid_full(0, 0, v);
     cpuid_full(1, 0, r);
-    if (!(r[3] & (1u << 28)) || ml < 4)
+    if (!(r[3] & (1u << 28)))
         return 0;
+    /* BIOS option "CPUID Limit" (Intel) hides leaves 4 and 0Bh. From Nehalem
+     * on (family 6, model 1Ah+, except Dunnington 1Dh) Intel reserves one SMT
+     * bit even with HT off (IDs 0, 2, 4, ...), so 1 keeps every core and
+     * drops the siblings. Core 2 numbers its cores 0, 1, 2, ...: keep 0. */
+    if (ml < 4) {
+        unsigned model = ((r[0] >> 4) & 15) | ((r[0] >> 12) & 0xf0);
+        return v[1] == 0x756e6547 && v[3] == 0x49656e69 && v[2] == 0x6c65746e && /* "GenuineIntel" */
+               ((r[0] >> 8) & 15) == 6 && model >= 0x1a && model != 0x1d;
+    }
     unsigned logical = (r[1] >> 16) & 0xff;
     cpuid_full(4, 0, r);
     unsigned cores = (r[0] >> 26) + 1;
@@ -1203,6 +1214,12 @@ int platform_core_count(void) {
         }
     }
     return 1 + g_count;
+}
+
+const char *platform_smp_mode(void) {
+    if (g_count <= 0)
+        return 0;
+    return g_mode == MODE_PAGING ? "PAGING" : g_mode == MODE_FLAT ? "FLAT" : "RING0";
 }
 
 platform_worker *platform_spawn_worker(int core_id, platform_worker_fn fn, void *arg) {

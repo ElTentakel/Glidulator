@@ -137,7 +137,10 @@ operating system does:
    excluding the game's core and its Hyper-Threading sibling. The cores are
    addressed individually via CPUID leaf 0Bh topology; broadcast is the
    fallback. Sharing a physical core with the game slowed down the output
-   measurably.
+   measurably. If the BIOS option "CPUID Limit" hides leaves 4 and 0Bh,
+   Intel CPUs from Nehalem on are assumed to reserve one SMT bit in the
+   APIC ID (they do so even with Hyper-Threading off), so the siblings are
+   still recognised.
 3. **Idle and shutdown**: unused APs halt. When the last worker ends, every
    AP receives INIT again and is back in its BIOS state. Nothing remains
    resident.
@@ -213,7 +216,7 @@ it starts the APs itself, as the OVL does under DOS:
    the VxD. Each AP takes a 64 KB stack from the VxD, clears CR0.TS and
    polls its job slot.
 4. **Choice of cores**: as under DOS, one AP per physical core (CPUID
-   topology); siblings of the main core and of already used cores park at
+   topology, including the "CPUID Limit" rule); siblings of the main core and of already used cores park at
    once. All APs are started by broadcast.
 5. **Jobs**: the DLL posts `fn(arg)` with its x87 control word and MXCSR;
    the AP reloads CR3, loads them and calls the worker (cdecl, flat

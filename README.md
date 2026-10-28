@@ -80,24 +80,26 @@ The GL-1 would not exist without these projects and the people behind them:
 
 ## Quick start
 
-The current version is **0.9.2, a preview release**: the tested titles
+The current version is **0.9.3, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-092)). Download the
-package `glidulator-0.9.2.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-093)). Download the
+package `glidulator-0.9.3.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.2 (all versions: [CHANGES.md](CHANGES.md)):
+New in 0.9.3 (all versions: [CHANGES.md](CHANGES.md)):
 
-- **Multi-core rendering under Windows 95/98/ME**: copy `GLSMP.VXD` next
-  to `glide2x.dll`. The DLL loads it only while the game runs and starts
-  the other CPU cores through it, as the DOS module does; nothing is
-  installed. GLQuake's `timedemo demo1` on a Core i7-4770T: 38.8 fps
-  instead of 15.4 fps. `GLIDULATOR_SMP=off` turns it off.
-- Windows 9x: write-combining for the display adapter's framebuffer
-  with generic display drivers such as VBEMP (several times faster output;
-  `GLIDULATOR_WC=0` turns it off). Also runs on real hardware (Core i7-4770T).
-- The trace DLL no longer crashes on start with programs whose window
-  class name is long (Nature95).
+- **Mipmap dithering** (`GLIDULATOR_LOD_DITHER=auto|1|0`): the board's
+  LOD dither is emulated, so the edge between two mipmap levels becomes a
+  4x4 dither pattern instead of a hard band; `1` forces it for every game.
+- **OSD shows how the other cores run**: `SMP RING0`, `PAGING`, `FLAT`
+  (DOS), `GLSMP` (Windows 9x), `THREADS` (Windows NT/XP, Wine) or `OFF`.
+- **`GLIDULATOR_SCREENSHOT=2`**: screenshots include the OSD.
+- **Hyper-Threading with the BIOS option "CPUID Limit"** (DOS and Windows
+  9x): siblings are no longer counted as cores of their own.
+- **8.4 MB less memory** for the texture cache; Pył loads its levels
+  without HDPMI32i.
+- Shared triangle edges are drawn exactly once; the start-up logo no
+  longer shows open pixels.
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 

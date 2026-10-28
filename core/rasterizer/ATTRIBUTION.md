@@ -49,10 +49,13 @@ The Voodoo video output filter in `core/vfilter.c` re-implements
 - LOD fix from 86Box 3a94359.
 - Perspective division through `vj_persp_fetch()`, so JIT and C path are
   bit-identical.
+- LOD dither (`textureMode` bit 4) added, which 86Box does not emulate:
+  `vj_persp_fetch_dither()` in the JIT, the same addition in
+  `voodoo_tmu_fetch()`; the state carries the screen line (`real_y`).
 - One dead line removed.
 
 Triangle setup, scanline filling, texture sampling, dithering, depth/alpha
-tests and LOD selection are otherwise unchanged.
+tests and LOD selection are otherwise unchanged (apart from the LOD dither).
 
 ## Note: `voodoo->params` vs. `params`
 

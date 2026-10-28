@@ -1361,7 +1361,7 @@ static int test_renderer(void) {
             "GLIDULATOR_WC",      "SST_GAMMA",          "GLIDULATOR_RENDERER",   "GLIDULATOR_THREADS",
             "GLIDULATOR_SMP",     "GLIDULATOR_VSYNC",   "GLIDULATOR_FSAA",       "GLIDULATOR_AA_POST",
             "GLIDULATOR_VOODOO_FILTER", "GLIDULATOR_SPLASH", "GLIDULATOR_SPLASH_FILE", "GLIDULATOR_CRT", "GLIDULATOR_SCREENSHOT",
-            "GLIDULATOR_BOARD"};
+            "GLIDULATOR_BOARD", "GLIDULATOR_LOD_DITHER"};
         static char text[GLIDE_CONFIG_MAX + 2];
         FILE       *f   = fopen("package/GLIDULAT.CFG", "rb");
         size_t      len = f ? fread(text, 1, sizeof text - 1, f) : 0;
@@ -1950,14 +1950,233 @@ static int test_screenshot(void) {
             fail = 1;
         }
     }
-    fail |= fopen("SHOT0002.BMP", "rb") != NULL; /* one file per key press */
+    FILE *extra = fopen("SHOT0002.BMP", "rb"); /* one file per key press */
+    fail |= extra != NULL;
+    if (extra)
+        fclose(extra);
     remove("SHOT0000.BMP");
     remove("SHOT0001.BMP");
+
+    /* With the OSD: SCREENSHOT=1 leaves it out, 2 takes it into the file
+     * (frame pixel at (4,4) on the black picture). */
+    setenv("GLIDULATOR_OSD", "1", 1);
+    for (int mode = 1; mode <= 2; mode++) {
+        setenv("GLIDULATOR_SCREENSHOT", mode == 2 ? "2" : "1", 1);
+        if (open_320x240())
+            break;
+        grBufferClear(0, 0, 0);
+        g_linux_screenshot_key = 1;
+        grBufferSwap(0);
+        grSstWinClose();
+        const char *name = mode == 2 ? "SHOT0003.BMP" : "SHOT0002.BMP"; /* numbering goes on */
+        FILE       *f    = fopen(name, "rb");
+        size_t      n    = f ? fread(file, 1, sizeof file, f) : 0;
+        if (f)
+            fclose(f);
+        remove(name);
+        uint8_t        k0  = lut ? lut[0] : 0;
+        const uint8_t *osd = file + 54 + (size_t) (239 - 4) * 960 + 4 * 3;
+        int            has = osd[0] != k0 || osd[1] != k0 || osd[2] != k0;
+        if (n != sizeof file - 1 || has != (mode == 2)) {
+            fprintf(stderr, "GLIDULATOR_SCREENSHOT=%d with OSD: %zu bytes, OSD %s\n", mode, n,
+                    has ? "in the file" : "missing");
+            fail = 1;
+        }
+    }
+    unsetenv("GLIDULATOR_OSD");
+    unsetenv("GLIDULATOR_SCREENSHOT");
     if (chdir("../.."))
         return 1;
     if (fail)
         fprintf(stderr, "Test 23 FAILED\n");
     return fail;
+}
+
+/* Fan of 32 triangles around a common centre (a disc), added up with
+ * ONE/ONE blending: every triangle adds 1 to the red channel, so a pixel
+ * inside the disc must read exactly 1 (0 = hole, 2 = drawn twice). The
+ * vertices of shared edges are bit-identical. Returns holes + doubles. */
+static int fan_errors(float cx, float cy, float r, float turn, int recompute, int *holes, int *doubles) {
+    GrVertex rim[33], m;
+    memset(&m, 0, sizeof m);
+    m.x = cx;
+    m.y = cy;
+    m.r = 8.0f; /* RGB565 red 1 */
+    m.a = 255.0f;
+    m.oow = 1.0f;
+    for (int i = 0; i <= 32; i++) {
+        float a = 6.2831853f * ((float) (i % 32) + turn) / 32;
+        rim[i]  = m;
+        rim[i].x = cx + r * cosf(a);
+        rim[i].y = cy + r * sinf(a);
+    }
+    grBufferClear(0, 0xff, 0);
+    for (int i = 0; i < 32; i++) {
+        GrVertex p = rim[i], q = rim[i + 1];
+        if (recompute) { /* as the start-up logo computes them: a1 = a0 + step */
+            float a0 = 6.2831853f * ((float) i + turn) / 32, a1 = a0 + 6.2831853f / 32;
+            p.x = cx + r * cosf(a0);
+            p.y = cy + r * sinf(a0);
+            q.x = cx + r * cosf(a1);
+            q.y = cy + r * sinf(a1);
+        }
+        grDrawTriangle(&m, &p, &q);
+    }
+    grBufferSwap(0);
+    *holes = *doubles = 0;
+    float in = r * cosf(3.14159265f / 32) - 2.0f; /* safely inside the polygon */
+    for (int y = 0; y < g_last_h; y++)
+        for (int x = 0; x < g_last_w; x++) {
+            int   v  = g_last_frame[y * g_last_w + x] >> 11;
+            float dx = (float) x + 0.5f - cx, dy = (float) y + 0.5f - cy;
+            if (v > 1)
+                ++*doubles;
+            else if (v == 0 && dx * dx + dy * dy < in * in)
+                ++*holes;
+        }
+    return *holes + *doubles;
+}
+
+static int test_fan_coverage(void) {
+    printf("-- Test 24: shared edges of a triangle fan (no holes, no double pixels) --\n");
+    int fail = 0;
+    for (int path = 0; path < 2; path++) {
+        int kind = path ? GLIDE_RENDERER_JIT : GLIDE_RENDERER_C;
+        if (!glide_renderer_available(kind))
+            continue;
+        glide_renderer_force(kind, 1);
+        if (open_320x240())
+            return 1;
+        grDitherMode(GR_DITHER_DISABLE);
+        grCullMode(GR_CULL_DISABLE);
+        grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED,
+                       GR_COMBINE_OTHER_NONE, FXFALSE);
+        grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO);
+        for (int rec = 0; rec < 2; rec++) {
+            int h = 0, d = 0, runs = 0, bad = 0;
+            for (int k = 0; k < 64; k++) {
+                int hk, dk;
+                float cx = 160.0f + (float) (k % 8) * 0.13f, cy = 120.0f + (float) (k / 8) * 0.17f;
+                if (fan_errors(cx, cy, 100.0f, 0.37f * (float) k, rec, &hk, &dk))
+                    bad++;
+                h += hk;
+                d += dk;
+                runs++;
+            }
+            printf("  %s, %s vertices: %d of %d fans with errors, %d holes, %d double pixels\n",
+                   glide_renderer_name(kind), rec ? "recomputed" : "shared", bad, runs, h, d);
+            if (!rec)
+                fail |= bad;
+        }
+    }
+    glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
+    if (fail) {
+        fprintf(stderr, "Test 24 FAILED\n");
+        return 1;
+    }
+    printf("  ok: every pixel of the fan drawn exactly once\n");
+    return 0;
+}
+
+/* Receding textured floor, 256x256 P8 texture whose mipmap levels each
+ * have their own colour. The LOD changes from row to row; a frame copy goes
+ * to out. mode: grTexMipMapMode, hint: grHints(GR_HINT_ALLOW_MIPMAP_DITHER),
+ * cfg: GLIDULATOR_LOD_DITHER (NULL = unset). Returns the number of colour
+ * changes along the rows: few without LOD dither, many with it. */
+static int lod_floor(int kind, GrMipMapMode_t mode, int hint, const char *cfg, uint16_t *out) {
+    static uint8_t data[87381];
+    if (cfg)
+        setenv("GLIDULATOR_LOD_DITHER", cfg, 1);
+    else
+        unsetenv("GLIDULATOR_LOD_DITHER");
+    glide_renderer_force(kind, 1);
+    if (open_320x240())
+        return -1;
+    grDitherMode(GR_DITHER_DISABLE);
+    GuTexPalette pal;
+    memset(&pal, 0, sizeof pal);
+    size_t off = 0;
+    for (int lv = 0, n = 256; lv < 9; lv++, n /= 2) {
+        memset(data + off, lv + 1, (size_t) n * (size_t) n);
+        off += (size_t) n * (size_t) n;
+        pal.data[lv + 1] = 0x20 * (unsigned) (lv + 1) << 16 | (lv & 1 ? 0xff00 : 0) | (unsigned) (255 - 28 * lv);
+    }
+    GrTexInfo info;
+    info.largeLod    = GR_LOD_256;
+    info.smallLod    = GR_LOD_1;
+    info.aspectRatio = GR_ASPECT_1x1;
+    info.format      = GR_TEXFMT_P_8;
+    info.data        = data;
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+    grTexDownloadMipMap(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grHints(GR_HINT_ALLOW_MIPMAP_DITHER, hint ? 1 : 0);
+    grTexSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexMipMapMode(GR_TMU0, mode, FXFALSE);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE,
+                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grBufferClear(0, 0, 0);
+    GrVertex v[4];
+    v[0] = vtx(20, 10, 255, 255, 255, 255, 0, 0.05f, 0, 0);
+    v[1] = vtx(300, 10, 255, 255, 255, 255, 0, 0.05f, 512, 0);
+    v[2] = vtx(300, 230, 255, 255, 255, 255, 0, 1.0f, 512, 512);
+    v[3] = vtx(20, 230, 255, 255, 255, 255, 0, 1.0f, 0, 512);
+    grDrawPolygonVertexList(4, v);
+    grBufferSwap(0);
+    memcpy(out, g_last_frame, (size_t) W * H * 2);
+    int changes = 0;
+    for (int y = 12; y < 228; y++)
+        for (int x = 23; x < 298; x++)
+            changes += out[y * W + x] != out[y * W + x - 1];
+    return changes;
+}
+
+static int test_lod_dither(void) {
+    printf("-- Test 25: LOD dither (GR_MIPMAP_NEAREST_DITHER, GLIDULATOR_LOD_DITHER) --\n");
+    static uint16_t plain[W * H], dith[W * H], img[W * H], first[W * H];
+    int fail = 0, have_first = 0;
+    for (int path = 0; path < 2; path++) {
+        int kind = path ? GLIDE_RENDERER_JIT : GLIDE_RENDERER_C;
+        if (!glide_renderer_available(kind))
+            continue;
+        int c0 = lod_floor(kind, GR_MIPMAP_NEAREST, 0, NULL, plain);
+        int c1 = lod_floor(kind, GR_MIPMAP_NEAREST_DITHER, 1, NULL, dith);
+        printf("  %s: %d colour changes without, %d with LOD dither\n", glide_renderer_name(kind), c0, c1);
+        if (c1 < 1000 || c1 < 10 * c0) {
+            fprintf(stderr, "%s: LOD dither has no effect\n", glide_renderer_name(kind));
+            fail = 1;
+        }
+        /* as in 3dfx's Glide: no dither without the hint */
+        lod_floor(kind, GR_MIPMAP_NEAREST_DITHER, 0, NULL, img);
+        fail |= memcmp(img, plain, sizeof img) != 0;
+        /* GLIDULATOR_LOD_DITHER=1 forces it, =0 suppresses it */
+        lod_floor(kind, GR_MIPMAP_NEAREST, 0, "1", img);
+        fail |= memcmp(img, dith, sizeof img) != 0;
+        lod_floor(kind, GR_MIPMAP_NEAREST_DITHER, 1, "0", img);
+        fail |= memcmp(img, plain, sizeof img) != 0;
+        if (fail)
+            fprintf(stderr, "%s: hint/GLIDULATOR_LOD_DITHER not followed\n", glide_renderer_name(kind));
+        /* JIT bit-identical to the C path */
+        if (!have_first) {
+            memcpy(first, dith, sizeof first);
+            have_first = 1;
+        } else if (memcmp(first, dith, sizeof first)) {
+            fprintf(stderr, "JIT differs from the C path\n");
+            fail = 1;
+        }
+    }
+    lod_floor(GLIDE_RENDERER_C, GR_MIPMAP_NEAREST, 0, NULL, img);
+    save_png("build/linux/lod_plain.png");
+    lod_floor(GLIDE_RENDERER_C, GR_MIPMAP_NEAREST_DITHER, 1, NULL, img); /* for the golden image */
+    unsetenv("GLIDULATOR_LOD_DITHER");
+    glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
+    if (fail) {
+        fprintf(stderr, "Test 25 FAILED\n");
+        return 1;
+    }
+    save_png("tests/golden/lod_dither.png");
+    printf("  ok: levels dithered on request, forced and suppressed by the setting\n");
+    return 0;
 }
 
 int main(void) {
@@ -1982,7 +2201,7 @@ int main(void) {
     if (test_demo_triangles() || test_demo_triangles_mipmap())
         return 1;
     if (test_lfb() || test_sst() || test_gutex() || test_fog_ncc() || test_gu_presets() || test_clip() || test_renderer() || test_output_osd() || test_fsaa() || test_fsaa_auto_post() || test_voodoo_filter() ||
-        test_lfb_after_close() || test_splash() || test_screenshot())
+        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither())
         return 1;
 
     grGlideShutdown();

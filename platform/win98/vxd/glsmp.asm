@@ -1169,14 +1169,14 @@ cpu_topo proc
     jne  short ct_leaf1
     and  eax, 31
     mov  [g_smt_shift], eax
-    jmp  short ct_id
+    jmp  ct_id
 ct_leaf1:
     mov  eax, 1
     cpuid
     test edx, 10000000h        ; HTT: more than one logical CPU per package
-    jz   short ct_id
+    jz   ct_id
     cmp  dword ptr [g_max_leaf], 4
-    jb   short ct_id
+    jb   short ct_limited
     shr  ebx, 16
     and  ebx, 0FFh             ; logical CPUs per package
     push ebx
@@ -1199,6 +1199,32 @@ ct_log2:
     jmp  short ct_log2
 ct_shift:
     mov  [g_smt_shift], ecx
+    jmp  short ct_id
+ct_limited:                    ; "CPUID Limit" hides leaves 4 and 0Bh: as
+    mov  edx, eax              ; smt_shift() in smp_dos.c, Intel family 6
+    shr  edx, 8                ; model 1Ah+ (not 1Dh) keeps 1 SMT bit
+    and  edx, 15
+    cmp  edx, 6
+    jne  short ct_id
+    mov  edx, eax
+    shr  edx, 4
+    and  edx, 15
+    shr  eax, 12
+    and  eax, 0F0h
+    or   eax, edx              ; model
+    cmp  eax, 1Ah
+    jb   short ct_id
+    cmp  eax, 1Dh
+    je   short ct_id
+    xor  eax, eax
+    cpuid
+    cmp  ebx, 756E6547h        ; "GenuineIntel"
+    jne  short ct_id
+    cmp  edx, 49656E69h
+    jne  short ct_id
+    cmp  ecx, 6C65746Eh
+    jne  short ct_id
+    mov  dword ptr [g_smt_shift], 1
 ct_id:
     call apic_id_eax
     mov  ecx, [g_smt_shift]

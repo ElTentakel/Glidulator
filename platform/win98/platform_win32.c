@@ -157,6 +157,10 @@ int platform_core_count(void) {
     return vxd_up() ? 1 + g_vxd_aps : 1;
 }
 
+const char *platform_smp_mode(void) {
+    return g_vxd_state > 0 ? "GLSMP" : !(GetVersion() & 0x80000000u) ? "THREADS" : 0;
+}
+
 /* SSE needs the OS to save the XMM registers (FXSAVE, CR4.OSFXSR).
  * Windows 98SE and ME do; Windows 95 and the first Windows 98 do not, and
  * there every SSE instruction raises an invalid-opcode exception even if

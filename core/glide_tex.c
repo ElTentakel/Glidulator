@@ -16,6 +16,7 @@
 
 #include "glide_internal.h"
 #include "glidulator/trace.h"
+#include "glidulator/platform.h"
 
 #include "vid_voodoo_texture.h"
 
@@ -284,6 +285,17 @@ void GR_EXPORT GLIDE_API grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
 static GrTexInfo g_src;
 static int       g_src_valid;
 
+/* GLIDULATOR_LOD_DITHER: -1 = auto (as the game asks), 0 = never, 1 = for
+ * every mipmapped texture (like the "mipmap dithering" driver option). */
+static int g_lod_dither_cfg = -1;
+
+void glide_tex_read_cfg(void) {
+    char cfg[8];
+    g_lod_dither_cfg = -1;
+    if (platform_get_config("GLIDULATOR_LOD_DITHER", cfg, sizeof cfg) && (cfg[0] == '0' || cfg[0] == '1') && !cfg[1])
+        g_lod_dither_cfg = cfg[0] - '0';
+}
+
 static void tex_recalc(void) {
     if (!g_src_valid)
         return;
@@ -299,8 +311,10 @@ static void tex_recalc(void) {
     uint32_t tm = g_voodoo.params.textureMode[0] & ~(TM_FORMAT(0xf) | TM_LODDITHER);
     tm |= TM_FORMAT(g_src.format) | TM_PERSP;
     /* As in 3dfx's Glide: LOD dithering only if the application allows it
-     * with grHints(GR_HINT_ALLOW_MIPMAP_DITHER). */
-    if (g_sw.mipmap_mode == GR_MIPMAP_NEAREST_DITHER && g_sw.allow_lod_dither)
+     * with grHints(GR_HINT_ALLOW_MIPMAP_DITHER); GLIDULATOR_LOD_DITHER can
+     * force it on or off. */
+    if (g_lod_dither_cfg == 1 ? g_sw.mipmap_mode != GR_MIPMAP_DISABLE
+                              : g_lod_dither_cfg < 0 && g_sw.mipmap_mode == GR_MIPMAP_NEAREST_DITHER && g_sw.allow_lod_dither)
         tm |= TM_LODDITHER;
     g_voodoo.params.textureMode[0] = tm;
     g_voodoo.params.tformat[0]     = g_src.format;

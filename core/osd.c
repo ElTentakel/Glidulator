@@ -1,7 +1,7 @@
 /* Frame output with timing and the optional on-screen display
  * (GLIDULATOR_OSD=1): frames per second, game+render and output time per
- * frame, render path, threads, Glide and screen resolution, active image
- * options. Portable (also in the OVL, no C runtime): the text is drawn
+ * frame, render path, cores and how they are started (SMP mode), Glide and
+ * screen resolution, active image options. Portable (also in the OVL, no C runtime): the text is drawn
  * straight into the RGB565 image and the overwritten area is restored
  * after output, so the game never sees it (LFB reads, frames without
  * clear). */
@@ -79,6 +79,7 @@ static const uint8_t g_osd_font[][7] = {
 #define OSD_FRAME 0x6b4d
 
 static int       g_osd_on;
+static int       g_shot_osd; /* GLIDULATOR_SCREENSHOT=2: screenshot with the OSD */
 static int       g_osd_s = 1; /* scale */
 static uint16_t *g_osd_save; /* saved area, g_width x OSD_H */
 static char      g_osd_text[OSD_LINES][OSD_CHARS + 1];
@@ -141,8 +142,9 @@ static char *put_value(char *p, char *end) {
 }
 
 static void set_lines(unsigned fps10, unsigned render10, unsigned out10) {
-    char *p = g_osd_text[0], *end = p + OSD_CHARS;
-    int   dw, dh;
+    char       *p = g_osd_text[0], *end = p + OSD_CHARS;
+    const char *smp;
+    int         dw, dh;
     /* 1: speed */
     p  = put_value(p, end);
     p  = put_tenths_w(p, end, fps10, 5);
@@ -158,7 +160,8 @@ static void set_lines(unsigned fps10, unsigned render10, unsigned out10) {
     p  = put_label(p, end, " MS");
     *p = 0;
 
-    /* 2: path, cores used/available (game core plus workers), resolution */
+    /* 2: path, cores used/available (game core plus workers), how the
+     * other cores run (platform_smp_mode), resolution */
     p   = g_osd_text[1];
     end = p + OSD_CHARS;
     p   = put_value(p, end);
@@ -169,6 +172,11 @@ static void set_lines(unsigned fps10, unsigned render10, unsigned out10) {
     p   = put_str(p, end, "/");
     p   = put_uint(p, end, (unsigned) platform_core_count());
     p   = put_label(p, end, platform_core_count() == 1 ? " CORE" : " CORES");
+    p   = put_sep(p, end);
+    p   = put_label(p, end, "SMP ");
+    p   = put_value(p, end);
+    smp = glide_renderer_cores() > 1 ? platform_smp_mode() : 0;
+    p   = put_str(p, end, smp ? smp : "OFF");
     p   = put_sep(p, end);
     p   = put_value(p, end);
     p   = put_uint(p, end, (unsigned) g_width);
@@ -275,7 +283,8 @@ static void draw(uint16_t *fb, int w) {
 
 void glide_osd_open(void) {
     char cfg[8];
-    g_osd_on = platform_get_config("GLIDULATOR_OSD", cfg, sizeof cfg) && cfg[0] == '1';
+    g_osd_on   = platform_get_config("GLIDULATOR_OSD", cfg, sizeof cfg) && cfg[0] == '1';
+    g_shot_osd = platform_get_config("GLIDULATOR_SCREENSHOT", cfg, sizeof cfg) && cfg[0] == '2';
     platform_free(g_osd_save);
     g_osd_save = 0;
     /* A screen mode smaller than the Glide picture (DOS mode 13h: 640x480
@@ -357,7 +366,8 @@ void glide_present(int vsync) {
     /* FSAA/AA_POST: processed image (core/fsaa.c), otherwise fb_mem itself */
     uint16_t *fb = (uint16_t *) glide_fsaa_output();
     int       w  = 0;
-    glide_screenshot_frame(fb);   /* screenshot key: SHOTnnnn.BMP (core/screenshot.c) */
+    if (!g_shot_osd || !g_osd_save)
+        glide_screenshot_frame(fb); /* screenshot key: SHOTnnnn.BMP (core/screenshot.c) */
     glide_splash_first_frame(fb); /* monitor sync-in (GLIDULATOR_SPLASH) */
     if (g_osd_save) {
         w = text_width();
@@ -370,6 +380,8 @@ void glide_present(int vsync) {
                 dst[x] = src[x];
         }
         draw(fb, w);
+        if (g_shot_osd)
+            glide_screenshot_frame(fb); /* GLIDULATOR_SCREENSHOT=2: with the OSD */
     }
     /* video filter if on (core/vfilter.c), except the OSD box */
     glide_blit_output_keep(fb, g_osd_save ? OSD_X : 0, OSD_Y, g_osd_save ? w : 0, box_height());
