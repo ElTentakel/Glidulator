@@ -50,6 +50,14 @@ typedef struct {
  * it. *used = registers in use afterwards. */
 int mtrr_plan_wc(const mtrr_state *in, uint64_t base, uint64_t size, mtrr_state *out, int *used);
 
+/* Copy of in without anything above 4 GB: ranges entirely above are
+ * dropped, a range from 0 reaching beyond 4 GB ends at 4 GB. Only for a
+ * 32-bit system without PAE, which never reaches memory above 4 GB: there
+ * the default type then applies. Frees registers that firmware spends on
+ * RAM and holes above 4 GB (i7-4790, 32 GB: 12 of 10 needed, 6 after
+ * this). 0 if a mask is not contiguous. */
+int mtrr_clip_4g(const mtrr_state *in, mtrr_state *out);
+
 /* Largest sensible WC range for a framebuffer: at least need bytes, at
  * most vram (video memory per VBE), aligned at phys; the larger, the fewer
  * UC pieces. 0 if phys is not suitably aligned. */

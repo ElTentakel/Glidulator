@@ -5,7 +5,7 @@
 Tested with the release variant, unless noted otherwise. "Runs" means
 rendered correctly through the whole demo or into actual gameplay. Most
 tests ran in DOSBox (DOS) or Wine (Windows); titles marked HW were also
-run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
+run on real hardware (Core i7-4770T or Core i7-4790, FreeDOS / Windows 98SE).
 
 ## DOS (`GLIDE2X.OVL`)
 
@@ -19,7 +19,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 | Grand Theft Auto (DMA Design, 1997) | game demo | **runs** | `guTex*` texture management, LFB locks. |
 | Burnout: Championship Drag Racing (Bethesda, 1998) | game demo | **runs** | Fog, lines, motion blur through the LFB. |
 | Tomb Raider (Core Design, 1996), Voodoo Rush patch `TUMBRUSH.EXE` | game | **runs** (QEMU/KVM, FreeDOS) | Needs `GLIDULATOR_BOARD=rush`, otherwise it quits after the intro videos. Title menu and demo mode tested with the full CD in the drive (LaserLok: DOSBox fails with error 607). |
-| Pył (Optimus Nexus, 1998) | game demo | **runs** (DOSBox; menu in QEMU/KVM) | Start with `PYLDEMO -V1` (3Dfx; the Windows setup program writes the same choice). Needs about 32 MB for itself on top of Glidulator; before 0.9.3 loading a level failed with `CH_C3DFX[80]` (out of memory: its DOS/4GW 1.97 reported the same 20 MB free with 63 and 127 MB of RAM). In QEMU the menu ignores mouse clicks. |
+| Pył (Optimus Nexus, 1998) | game demo | **runs** (HW) | Start with `PYLDEMO -V1` (3Dfx; the Windows setup program writes the same choice). Needs about 32 MB for itself on top of Glidulator; before 0.9.3 loading a level failed with `CH_C3DFX[80]` (out of memory: its DOS/4GW 1.97 reported the same 20 MB free with 63 and 127 MB of RAM). Real hardware: first level on a Core i7-4770T (no memory manager) and a Core i7-4790 (no memory manager, and HDPMI32i), about 30 fps on the 4790. With EMM386 but without HDPMI32i it crashes on one tester's machine (see Known issues). In QEMU the menu ignores mouse clicks. |
 | Archimedean Dynasty (Massive, 1996) | game demo, 3Dfx patch | menus tested | Mission start needs mouse operation, not automated. |
 | Yume 2 (inf, 1998) | demo | not tested | Crashes in DOSBox before the first Glide call (not Glidulator-related). |
 
@@ -28,6 +28,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
 | Title | Type | Status | Notes |
 |---|---|---|---|
 | GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. Windows 98 on HW with `GLSMP.VXD`: `timedemo demo1` 38.8 fps on 4 cores (3 workers) against 15.4 fps on one; demo2 37.2, demo3 37.8, FSAA 2x 19.4 fps. |
+| Half-Life 1.1.1.0 (Valve, 1998), OpenGL with the 3Dfx mini driver | game | **runs** (HW) | Start with `-gl`. Windows 98 on HW with `GLSMP.VXD`: the picture froze after one or two minutes ("not responding"); fixed in 0.9.4 (a render worker's triangle was overwritten while it drew it). Tested on an i7-4790: tram ride and four minutes of play, 30-70 fps. |
 | Nature95 (Vertigo, 1997) | demo | **runs** (HW) | Windows 98 on HW with `GLSMP.VXD` (multi-core). |
 | Formula 1 (Psygnosis) | game demo | **runs** (HW) | Into the race, cockpit view; Windows 98 on HW with `GLSMP.VXD` (multi-core). |
 | Operation 3DFX '98 (7 entries) | demo contest | **all run** | No Reality, Chrome II (3 parts), Visions, Planet Cornball (3dfx MiniGL), Daggmask, Oblivion, Scenarios. |
@@ -44,7 +45,7 @@ run on real hardware (Core i7-4770T, FreeDOS / Windows 98SE).
   only; the shareware/demo data is not accepted.
 - **Glide 3.x**: games that need `glide3x.dll` are out of scope.
 
-## Known issues in 0.9.3
+## Known issues in 0.9.4
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
@@ -63,14 +64,19 @@ look at them:
 - **UEFI machines with CSMWrap**: one laptop (Ryzen 5 5500U) crashed in
   SBEMU's VDPMI build while loading, and Dimension hung under HDPMI32i.
   Not reproducible elsewhere so far.
+- **Pył with EMM386 but without HDPMI32i** crashes while loading a level
+  on one tester's machine (HIMEM + EMM386, DOS/4GW directly). Without
+  EMM386, or with HDPMI32i, it loads. Cause not known yet; please report
+  the error text and a trace log if you see it.
 - **Windows 95/98/ME** run Glide games on one CPU core unless `GLSMP.VXD`
-  lies next to `glide2x.dll`. Multi-core under Windows 9x is new and so far
-  tested in a virtual machine and on one real PC (Core i7-4770T); if a game
-  misbehaves with it, try `GLIDULATOR_SMP=off`.
-- **Hyper-Threading with "CPUID Limit"**: the detection is new in 0.9.3
-  and so far tested in a virtual machine only. If the OSD shows more
-  cores than the CPU has (for example `5/8 CORES` on a quad core), please
-  report it with the trace log.
+  lies next to `glide2x.dll`. Multi-core under Windows 9x is tested in a
+  virtual machine and on two real PCs (Core i7-4770T, Core i7-4790), so
+  far Intel only; if a game misbehaves with it, try `GLIDULATOR_SMP=off`.
+- **Windows 98, game ended through the task list**: write-combining
+  stays on until the next reboot (the next start reports `already on`).
+  Harmless; quit games normally.
+- **`GLIDULATOR_HT=1`** is experimental. On four cores with
+  Hyper-Threading it is slower than the default.
 
 ## Remarks for testers
 

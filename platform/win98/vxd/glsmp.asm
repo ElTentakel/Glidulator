@@ -190,6 +190,7 @@ g_bsp_core    dd 0           ; BSP's APIC ID >> g_smt_shift (and 255)
 g_core_claim  dd 8 dup(0)    ; bit per core: an AP has taken it
 g_ap_sibling  dd 0           ; APs that parked as a second thread of a core
 g_ap_apic     dd MAX_AP dup(0)   ; APIC ID of AP index n
+g_ht_all      dd 0           ; GLIDULATOR_HT=1: siblings take slots too
 ; state: parking in the BIOS ROM after STOP
 g_rom_hlt     dd 1           ; physical address of "hlt; jmp $-1" (F4 EB FD) in
                              ;   the BIOS ROM, 0 = none, 1 = not searched yet
@@ -342,6 +343,10 @@ dio_free:
 dio_smp_start:
     mov dword ptr [g_test_xor_lo], 0   ; optional input {xor lo, xor hi}
     mov dword ptr [g_test_xor_hi], 0
+    cmp dword ptr [g_running], 0       ; flags only before the first start
+    jne short dss_keep_ht
+    mov dword ptr [g_ht_all], 0
+dss_keep_ht:
     cmp dword ptr [ebp+DP_CBIN], 8
     jb  short dss_noin
     mov ecx, [ebp+DP_IN]
@@ -351,6 +356,11 @@ dio_smp_start:
     mov [g_test_xor_lo], eax
     mov eax, [ecx+4]
     mov [g_test_xor_hi], eax
+    cmp dword ptr [ebp+DP_CBIN], 12    ; optional third word: flags
+    jb  short dss_noin
+    mov eax, [ecx+8]
+    and eax, 1                         ; bit 0: Hyper-Threading siblings
+    mov [g_ht_all], eax                ;   get worker slots too
 dss_noin:
     call do_smp_start
     mov edi, [ebp+DP_OUT]
@@ -382,6 +392,16 @@ dss_noin:
     mov ecx, [g_bsp_core]
     mov [edi+36], ecx
     mov eax, 40
+    cmp dword ptr [ebp+DP_CBOUT], 40+4*MAX_AP
+    jb  short dss_short
+    push esi
+    lea  edi, [edi+40]             ; APIC ID of every AP index
+    mov  esi, offset g_ap_apic
+    mov  ecx, MAX_AP
+    cld
+    rep  movsd
+    pop  esi
+    mov  eax, 40+4*MAX_AP
 dss_short:
     call set_cbret
     jmp dio_unlock
@@ -1622,6 +1642,8 @@ ap_pm32:
     mov gs, dx
     jmp ap_read_id
 ap_have_id:                          ; esi = APIC ID
+    cmp dword ptr [g_ht_all], 0
+    jne ap_take_slot                 ; GLIDULATOR_HT=1: every AP a slot
     mov eax, esi
     mov ecx, [g_smt_shift]
     shr eax, cl
@@ -1630,6 +1652,7 @@ ap_have_id:                          ; esi = APIC ID
     je  ap_sibling               ; second thread of the BSP's core
     lock bts [g_core_claim], eax
     jc  ap_sibling               ; core already has an AP
+ap_take_slot:
     mov eax, 1
     lock xadd [g_ap_next], eax
     cmp eax, MAX_AP

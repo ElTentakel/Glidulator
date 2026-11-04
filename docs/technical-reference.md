@@ -140,7 +140,9 @@ operating system does:
    measurably. If the BIOS option "CPUID Limit" hides leaves 4 and 0Bh,
    Intel CPUs from Nehalem on are assumed to reserve one SMT bit in the
    APIC ID (they do so even with Hyper-Threading off), so the siblings are
-   still recognised.
+   still recognised. `GLIDULATOR_HT=1` (experimental) targets every logical
+   CPU; workers then go to one thread per other core first, then to those
+   cores' siblings, and to the game core's sibling last.
 3. **Idle and shutdown**: unused APs halt. When the last worker ends, every
    AP receives INIT again and is back in its BIOS state. Nothing remains
    resident.
@@ -217,7 +219,9 @@ it starts the APs itself, as the OVL does under DOS:
    polls its job slot.
 4. **Choice of cores**: as under DOS, one AP per physical core (CPUID
    topology, including the "CPUID Limit" rule); siblings of the main core and of already used cores park at
-   once. All APs are started by broadcast.
+   once. All APs are started by broadcast. With `GLIDULATOR_HT=1` every AP
+   takes a slot, and the DLL hands out its workers in the same order as
+   under DOS (from the APIC IDs the VxD reports per slot).
 5. **Jobs**: the DLL posts `fn(arg)` with its x87 control word and MXCSR;
    the AP reloads CR3, loads them and calls the worker (cdecl, flat
    selectors, so the ring-3 addresses are valid; FS is not the TIB, so
@@ -279,7 +283,16 @@ very slow.
   restores the saved MTRRs on close.
 - The planner is tested against real firmware layouts. It never changes the
   memory type outside the framebuffer.
-- Measured on a Core i7-4770T at 800x600: output 24 ms -> 4 ms per frame.
+- Firmware on machines with much RAM spends registers on ranges above
+  4 GB (i7-4790 with 32 GB: 12 of 10 registers needed). Without PAE
+  nothing above 4 GB is reachable, so when the plan does not fit those
+  ranges are left out while the game runs (6 registers there); the saved
+  layout comes back on close.
+- Measured at 800x600: Core i7-4770T output 24 ms -> 4 ms per frame;
+  Core i7-4790 (32 GB, ranges above 4 GB left out) 17.1 ms -> 2.8 ms.
+- Windows 98 (`wc_win9x.c`) uses the same planner from the DLL through a
+  ring-0 call gate. GLQuake on an i7-4790 with VBEMP: 37.6 -> 56.3 fps
+  (GDI copy 9-10 ms -> 0.1 ms per frame).
 
 **Windows** (`platform/win98/platform_win32.c`):
 - GDI `SetDIBitsToDevice`/`StretchDIBits` into an owned, never-activated,

@@ -27,7 +27,7 @@ output:
 | Variant | Writes `GLIDULAT.LOG` | Extra behaviour | Use it to |
 |---|---|---|---|
 | Release | no | none | play |
-| Trace | performance line every 100 frames, first use of each Glide function, chosen renderer, display mode, write-combining, CPU cores | none | measure |
+| Trace | performance line every 100 frames, first use of each Glide function, chosen renderer, display mode, write-combining, CPU cores; on Windows a `Stall:` report (where the game waits) when no frame arrives for 4 s | none | measure |
 | Debug | everything of Trace, plus texture/triangle details | own crash handler (DOS), machine-check reporting, frame capture for replay | diagnose |
 
 ## 2. Installation
@@ -43,12 +43,16 @@ Requirements and recommendations:
   Without it, Glidulator falls back to VGA mode 13h (320x200, 256 colours,
   dithered; see `GLIDULATOR_VGA_DITHER`).
 - **For multi-core rendering and the JIT**, boot DOS without a memory
-  manager, or with HIMEM only. Under EMM386 or other VCPI managers and in
-  the DOS box of Windows, the OVL does not run in ring 0. It then renders
-  on one core with the C path; everything else works.
-  After "Restart in MS-DOS mode" from Windows 98 (no memory manager), the
-  OVL switches the local APIC that Windows left off back on for the time
-  the extra cores run, so multi-core works there too.
+  manager, or with HIMEM only. The DPMI host HDPMI32i (also on top of
+  EMM386 or JEMMEX, as used for SBEMU) works too: the OSD then shows
+  `SMP PAGING`; write-combining stays off there. Under EMM386 or other
+  VCPI managers without HDPMI32i and in the DOS box of Windows, the OVL
+  renders on one core with the C path; everything else works.
+  After "Restart in MS-DOS mode" from Windows 98, the OVL switches the
+  local APIC that Windows left off back on for the time the extra cores
+  run, so multi-core works there too: without a memory manager, and with
+  HDPMI32i (also on top of EMM386), where it briefly reaches ring 0 through
+  a call gate for this.
 - Some DOS/4GW games abort with
   `DOS/16M error: [40] not enough available extended memory (XMIN)` when a
   memory manager is loaded on machines with a lot of RAM. Boot without one.
@@ -139,8 +143,9 @@ the Windows DLL.
 | Setting | Values | Default | Effect |
 |---|---|---|---|
 | `GLIDULATOR_RENDERER` | `auto`, `c`, `jit` | `auto` | Pixel pipeline. `auto` picks the JIT when the CPU has SSE2 and the system saves SSE registers, otherwise the C path. Both give identical pictures. |
-| `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4; `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
+| `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4 (with two cores one worker, which mainly lets the game prepare the next triangles while it draws); `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
 | `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Under Windows 95/98/ME only `off` matters: it keeps `GLSMP.VXD` unloaded (one core); every other value uses it when present. |
+| `GLIDULATOR_HT` | `0`, `1` | `0` | Experimental, DOS and Windows 95/98/ME (`GLSMP.VXD`): `1` lets Hyper-Threading siblings run render workers too, as if every logical processor were a core of its own. Real cores are still used first, the sibling of the game's core last. Helps on CPUs with 2 cores + HT; with 4 or more cores the default (one worker per physical core) is faster. Windows NT/2000/XP always use every logical processor. |
 | `GLIDULATOR_VSYNC` | `auto`, `0`, `1` | `auto` | DOS only: wait for vertical retrace before showing a frame. `auto` follows the game's `grBufferSwap` interval, `1` always waits, `0` never. Keeps games that time their logic per frame at the original speed. |
 | `GLIDULATOR_BOARD` | `voodoo`, `rush` | `voodoo` | Which 3dfx board Glidulator reports to the game. `voodoo` = Voodoo Graphics. `rush` = Voodoo Rush, for Rush patches that refuse to run on anything else, such as Tomb Raider's `TUMBRUSH.EXE` (it quits right after the intro videos without a message). Rendering is the same; leave it at `voodoo` for all other games. |
 | `SST_GAMMA` | number | `1.3` | Output gamma like the Voodoo RAMDAC (the variable name of 3dfx's driver). `1.0` is neutral; higher values are brighter. |
@@ -153,7 +158,7 @@ the Windows DLL.
 | `GLIDULATOR_VGA_DITHER` | `blue`, `bayer`, `off` | `blue` | DOS mode 13h (256 colours): how the picture is reduced. Every pixel first averages the area it covers, which removes the Voodoo's own dither pattern. `blue` then dithers with a fine, irregular pattern that stays still from frame to frame, `bayer` with the classic regular pattern, `off` rounds to the nearest colour (visible bands). |
 | `GLIDULATOR_SCALE` | `aspect`, `stretch`, `integer`, `none` | `aspect` | How the picture fills the screen. `aspect` keeps 4:3 for every game resolution, as Voodoo boards displayed it, with black borders. |
 | `GLIDULATOR_WC` | `0`, `1` | `1` | Enable write-combining for the video memory while the game runs. This is several times faster on real hardware. The original MTRRs are restored on exit. Windows 95/98/ME: only with generic display drivers (VBEMP and the like); real drivers set it themselves. |
-| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `1/2 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS one per physical core, under Windows NT/2000/XP every logical processor, under Windows 9x always 1), how the other cores run (`SMP RING0`, `PAGING` or `FLAT` under DOS, see `GLIDULATOR_SMP`; `SMP GLSMP` under Windows 9x with `GLSMP.VXD`; `SMP THREADS` under Windows NT/2000/XP and Wine; `SMP OFF` = one core), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
+| `GLIDULATOR_OSD` | `0`, `1` | `0` | On-screen display: frames per second, render and output time per frame, render path, cores in use/available (for example `3/4 CORES`: the game's core plus render workers, out of the cores Glidulator can use; under DOS and under Windows 9x with `GLSMP.VXD` one per physical core, under Windows NT/2000/XP every logical processor), how the other cores run (`SMP RING0`, `PAGING` or `FLAT` under DOS, see `GLIDULATOR_SMP`; `SMP GLSMP` under Windows 9x with `GLSMP.VXD`; `SMP THREADS` under Windows NT/2000/XP and Wine; `SMP OFF` = one core), resolutions and active image options. It is never visible to the game. On a screen mode smaller than the game's picture (DOS mode 13h) it is drawn larger so it stays readable. |
 
 ### Image quality
 
@@ -201,7 +206,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.3 (trace)
+Glidulator GL-1 0.9.4 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame

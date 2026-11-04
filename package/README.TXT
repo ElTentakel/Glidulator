@@ -59,16 +59,17 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.3
-  - Mipmap dithering as on the Voodoo board (GLIDULATOR_LOD_DITHER=
-    auto|1|0): no hard bands between mipmap levels.
-  - The OSD shows how the other cores run (SMP RING0, PAGING, FLAT,
-    GLSMP, THREADS or OFF). GLIDULATOR_SCREENSHOT=2 includes the OSD.
-  - Hyper-Threading with the BIOS option "CPUID Limit" is recognised
-    (DOS and Windows 9x); siblings no longer count as cores.
-  - 8.4 MB less memory for the texture cache: Pyl loads its levels
-    without HDPMI32i.
-  - Shared triangle edges are drawn exactly once (start-up logo).
+NEW IN 0.9.4
+  - Fixed: games could freeze after a minute or two on several cores
+    (Half-Life; DOS and Windows 9x).
+  - Write-combining on machines with much RAM (DOS and Windows 98):
+    much faster output there (Core i7-4790, 32 GB: GLQuake 37.6 -> 56.3
+    frames per second).
+  - Windows 98 restores the original MTRRs on exit again.
+  - Multi-core after Windows 98's "Restart in MS-DOS mode" also under
+    HDPMI32i, with or without EMM386.
+  - One render worker on two cores (before: everything on one core).
+  - GLIDULATOR_HT=1 (experimental): Hyper-Threading siblings render too.
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -76,14 +77,17 @@ KNOWN ISSUES
   - SBEMU (sound for DOS on modern machines): works with the DPMI host
     HDPMI32i (several cores, JIT). The VDPMI pre-release is experimental
     (Dimension hangs).
+  - Pyl with EMM386 but without HDPMI32i crashes while loading a level on
+    one tester's machine. Without EMM386, or with HDPMI32i, it loads.
   - Glide functions without effect: grAA* (anti-aliased primitives),
     guMP*, guTexCreateColorMipMap. No tested title uses them.
-  - Windows 95/98/ME: multi-core rendering (GLSMP.VXD) is new, tested in
-    a virtual machine and on one real PC. If a game misbehaves with it,
-    set GLIDULATOR_SMP=off or remove GLSMP.VXD.
-  - Hyper-Threading with the BIOS option "CPUID Limit": the detection is
-    new and tested in a virtual machine only. Please report if the OSD
-    shows more cores than the CPU has.
+  - Windows 95/98/ME: multi-core rendering (GLSMP.VXD) is tested in a
+    virtual machine and on two real PCs (Intel only). If a game
+    misbehaves with it, set GLIDULATOR_SMP=off or remove GLSMP.VXD.
+  - Windows 98: a game ended through the task list leaves write-combining
+    on until the next reboot. Harmless; quit games normally.
+  - GLIDULATOR_HT=1 is experimental; on four cores with Hyper-Threading
+    it is slower than the default.
 
 REPORTING PROBLEMS
   Use the Debug variant, reproduce the problem and attach GLIDULAT.LOG

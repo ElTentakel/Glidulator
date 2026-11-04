@@ -26,6 +26,8 @@ unsigned get_cr3(void);
 #pragma aux get_cr3 = "mov eax, cr3" value [eax];
 void set_cr3(unsigned v);
 #pragma aux set_cr3 = "mov cr3, eax" parm [eax];
+unsigned get_cr4(void);
+#pragma aux get_cr4 = "mov eax, cr4" value [eax];
 void wbinvd(void);
 #pragma aux wbinvd = 0x0f 0x09;
 unsigned save_cli(void);
@@ -48,6 +50,7 @@ void wrmsr2(unsigned msr, unsigned lo, unsigned hi);
 #define CR0_PG 0x80000000u
 #define CR0_CD 0x40000000u
 #define CR0_NW 0x20000000u
+#define CR4_PAE 0x20u
 #define MSR_MTRRCAP 0xfe
 #define MSR_DEFTYPE 0x2ff
 #define MSR_VAR0    0x200
@@ -214,6 +217,16 @@ int VID_CALL wc_dos_on(uint32_t phys, uint32_t need, uint32_t vram) {
     static mtrr_state plan;
     int               used = 0;
     int               rc   = mtrr_plan_wc(&g_saved, phys, size, &plan, &used);
+    if (rc == MTRR_PLAN_NOROOM && !(get_cr4() & CR4_PAE)) {
+        /* without PAE nothing above 4 GB is reachable: leave those ranges
+         * out while we run (g_saved restores them) */
+        static mtrr_state low;
+        if (mtrr_clip_4g(&g_saved, &low)) {
+            rc = mtrr_plan_wc(&low, phys, size, &plan, &used);
+            if (rc == MTRR_PLAN_DONE)
+                LOG_WC("ranges above 4 GB left out (no PAE)", 0, 0, 0, 0);
+        }
+    }
     if (rc == MTRR_PLAN_ALREADY) {
         LOG_WC("already on", phys, (unsigned) (size / 1024), 0, 0);
         return 0;

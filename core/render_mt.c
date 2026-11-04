@@ -99,17 +99,6 @@ static void worker_main(void *arg) {
     }
 }
 
-/* Index of the slowest worker. Returns the index, not its progress value:
- * looking that value up again in g_q_done[] races with the worker
- * advancing, and the search could run past the array. */
-static int slowest(void) {
-    int s = 0;
-    for (int i = 1; i < g_workers; i++)
-        if (g_q_write - g_q_done[i] > g_q_write - g_q_done[s])
-            s = i;
-    return s;
-}
-
 int glide_mt_workers(void) {
     return g_workers;
 }
@@ -213,11 +202,17 @@ static void mt_recover(void) {
 }
 
 void glide_mt_submit(const voodoo_params_t *params) {
-    for (;;) {
-        int i = slowest();
+    /* The entry about to be written was triangle g_q_write - MT_QUEUE:
+     * EVERY worker must be past it. Checking only the slowest worker found
+     * by a search is not enough: with a tie the search picks the lower
+     * index, that worker advances, and the other one is still drawing the
+     * entry that gets overwritten (texture-cache counters then disagree
+     * and voodoo_use_texture() waits forever; Half-Life, Windows 98).
+     * Lags only shrink while we wait, so one pass suffices. */
+    for (int i = 0; i < g_workers; i++) {
         if (g_q_write - g_q_done[i] < MT_QUEUE)
-            break;
-        /* queue full: wait for the slowest worker (with safety net) */
+            continue;
+        /* queue full: wait for this worker (with safety net) */
         if (wait_worker(i, g_q_write, MT_QUEUE - 1) < 0) {
             static voodoo_params_t copy; /* voodoo_triangle() takes non-const params */
             mt_recover();
@@ -254,7 +249,7 @@ void glide_mt_stop(void) {
 
 int glide_mt_start(int n) {
     glide_mt_stop();
-    if (n < 2 || n > GLIDE_MT_MAX || g_mt_broken)
+    if (n < 1 || n > GLIDE_MT_MAX || g_mt_broken)
         return 0;
 #ifdef GLIDULATOR_DEBUG
     {

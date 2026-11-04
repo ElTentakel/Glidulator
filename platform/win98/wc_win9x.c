@@ -61,10 +61,12 @@ static int        g_on;
 #ifdef GLIDULATOR_TRACE
 static void wclog(const char *s);
 static void wclog2(const char *s, unsigned a, unsigned b);
+static void log_mtrrs(const mtrr_state *s, unsigned def_lo);
 #    define WCLOG(s) wclog(s)
 #else
 #    define WCLOG(s)          ((void) 0)
 #    define wclog2(s, a, b)   ((void) 0)
+#    define log_mtrrs(s, d)   ((void) 0)
 #endif
 
 /* ---- ring 0 ------------------------------------------------------------ */
@@ -380,6 +382,7 @@ int wc_win9x_on(uint32_t need) {
     }
     wclog2("display", g_r0.pci_id, g_r0.pci_bdf);
     wclog2("LFB", g_r0.lfb_base, g_r0.lfb_size / 1024);
+    log_mtrrs(&g_r0.cur, g_r0.deftype_lo);
 
     /* Plan in ring 3 (portable code, tested). */
     g_saved           = g_r0.cur;
@@ -396,12 +399,23 @@ int wc_win9x_on(uint32_t need) {
         return -1;
     }
     int used = 0, rc = mtrr_plan_wc(&g_saved, g_r0.lfb_base, size, &g_plan, &used);
+    if (rc == MTRR_PLAN_NOROOM && !(g_r0.cr4 & 0x20)) { /* CR4.PAE */
+        /* without PAE nothing above 4 GB is reachable: leave those ranges
+         * out while we run (g_saved restores them) */
+        static mtrr_state low;
+        if (mtrr_clip_4g(&g_saved, &low)) {
+            rc = mtrr_plan_wc(&low, g_r0.lfb_base, size, &g_plan, &used);
+            if (rc == MTRR_PLAN_DONE)
+                WCLOG("ranges above 4 GB left out (no PAE)");
+        }
+    }
     if (rc == MTRR_PLAN_ALREADY) {
         WCLOG("already on (real driver sets WC itself)");
         return 0;
     }
     if (rc != MTRR_PLAN_DONE) {
         WCLOG(rc == MTRR_PLAN_NOROOM ? "off (too few free MTRRs)" : "off (range overlaps non-UC)");
+        wclog2("wanted base / size KB", g_r0.lfb_base, (unsigned) (size / 1024));
         return -1;
     }
 
@@ -428,7 +442,9 @@ void wc_win9x_off(void) {
     memset(&g_r0, 0, sizeof g_r0);
     if (r0_call(r0_read) < 0)
         return;
-    if (memcmp(&g_r0.cur, &g_plan, sizeof(int) + sizeof g_plan.var[0] * g_plan.count) != 0) {
+    /* compare count and registers only: r0_read leaves phys_bits/def_type 0 */
+    if (g_r0.cur.count != g_plan.count ||
+        memcmp(g_r0.cur.var, g_plan.var, sizeof g_plan.var[0] * g_plan.count) != 0) {
         WCLOG("off skipped (MTRRs changed by someone else)");
         return;
     }
@@ -455,6 +471,33 @@ static void wclog(const char *s) {
     *p++    = '\n';
     *p      = 0;
     platform_log(line);
+}
+/* Log the variable MTRRs (to learn new firmware layouts; same format as
+ * the OVL). */
+static void log_mtrrs(const mtrr_state *s, unsigned def_lo) {
+    char  line[96];
+    char *p = put_s(line, "MTRRdefType ");
+    p       = put_hex(p, def_lo);
+    *p++    = '\n';
+    *p      = 0;
+    platform_log(line);
+    for (int i = 0; i < s->count; i++) {
+        if (!(s->var[i].mask & 0x800))
+            continue;
+        p    = put_s(line, "  MTRR");
+        if (i >= 10)
+            *p++ = (char) ('0' + i / 10);
+        *p++ = (char) ('0' + i % 10);
+        p    = put_s(p, ": base ");
+        p    = put_hex(p, (unsigned) (s->var[i].base >> 32));
+        p    = put_hex(p, (unsigned) s->var[i].base);
+        p    = put_s(p, " mask ");
+        p    = put_hex(p, (unsigned) (s->var[i].mask >> 32));
+        p    = put_hex(p, (unsigned) s->var[i].mask);
+        *p++ = '\n';
+        *p   = 0;
+        platform_log(line);
+    }
 }
 static void wclog2(const char *s, unsigned a, unsigned b) {
     char  line[96];

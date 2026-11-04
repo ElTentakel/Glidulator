@@ -115,6 +115,44 @@ int main(void) {
         }
         CHECK(bad == 0);
     }
+    /* Real layout (Core i7-4790, 32 GB): default UC, WB 0-32 GB, WB 32-32.5
+     * GB, UC holes 3.5-4 GB, DC000000/64 MB, DB000000/16 MB and two above 32
+     * GB. Needs 12 of 10 registers; without everything above 4 GB (32-bit
+     * system without PAE) 6, and below 4 GB only the framebuffer changes. */
+    g_am = 0x7ffffff000ull;
+    memset(&in, 0, sizeof in);
+    in.count     = 10;
+    in.phys_bits = 39;
+    in.def_type  = MTRR_UC;
+    in.var[0]    = var(0, 0x800000000ull, MTRR_WB);
+    in.var[1]    = var(0x800000000ull, 0x20000000ull, MTRR_WB);
+    in.var[2]    = var(0xE0000000ull, 0x20000000ull, MTRR_UC);
+    in.var[3]    = var(0xDC000000ull, 0x4000000ull, MTRR_UC);
+    in.var[4]    = var(0xDB000000ull, 0x1000000ull, MTRR_UC);
+    in.var[5]    = var(0x81F000000ull, 0x1000000ull, MTRR_UC);
+    in.var[6]    = var(0x81EE00000ull, 0x200000ull, MTRR_UC);
+    CHECK(mtrr_plan_wc(&in, 0xE0000000ull, 0x10000000ull, &out, &used) == MTRR_PLAN_NOROOM);
+    {
+        mtrr_state low;
+        CHECK(mtrr_clip_4g(&in, &low));
+        rc = mtrr_plan_wc(&low, 0xE0000000ull, 0x10000000ull, &out, &used);
+        CHECK(rc == MTRR_PLAN_DONE && used == 6);
+        printf("  i7-4790 pattern below 4 GB: %d, %d of 10 registers\n", rc, used);
+        int bad = 0;
+        for (uint64_t a = 0; a < 0x100000000ull; a += 0x100000) {
+            int before = type_at(&in, a, MTRR_UC), after = type_at(&out, a, MTRR_UC);
+            int want   = (a >= 0xE0000000ull && a < 0xF0000000ull) ? MTRR_WC : before;
+            if (after != want && bad++ < 5)
+                fprintf(stderr, "  %09llx: before %d, after %d, expected %d\n", (unsigned long long) a, before,
+                        after, want);
+        }
+        CHECK(bad == 0);
+        CHECK(type_at(&out, 0x100000000ull, MTRR_UC) == MTRR_UC); /* above 4 GB: default type */
+        /* a range not starting at 0 never crosses 4 GB; ranges above go */
+        CHECK(low.var[0].mask == ((~(0x100000000ull - 1) & g_am) | 0x800));
+        CHECK(!(low.var[5].mask & 0x800) && !(low.var[6].mask & 0x800));
+    }
+
     /* cross-check the default-WB layout too (SeaBIOS with 2 GB) */
     g_am = 0xffffff000ull;
     memset(&in, 0, sizeof in);

@@ -76,30 +76,31 @@ The GL-1 would not exist without these projects and the people behind them:
 | Display    | VBE 2.0 linear framebuffer (15/16/24/32 bpp)   | GDI, own full-screen window                          |
 |            | fallback VGA mode 13h                          |                                                      |
 | CPU        | 386+; JIT needs SSE2 (quad core recommended)   | 486+; JIT needs SSE2                                 |
-| Multi-core | yes, without memory manager or with HIMEM only | Windows 9x: with `GLSMP.VXD` next to the DLL; NT/XP and Wine use threads |
+| Multi-core | yes, without memory manager, with HIMEM only, or under HDPMI32i | Windows 9x: with `GLSMP.VXD` next to the DLL; NT/XP and Wine use threads |
 
 ## Quick start
 
-The current version is **0.9.3, a preview release**: the tested titles
+The current version is **0.9.4, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-093)). Download the
-package `glidulator-0.9.3.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-094)). Download the
+package `glidulator-0.9.4.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.3 (all versions: [CHANGES.md](CHANGES.md)):
+New in 0.9.4 (all versions: [CHANGES.md](CHANGES.md)):
 
-- **Mipmap dithering** (`GLIDULATOR_LOD_DITHER=auto|1|0`): the board's
-  LOD dither is emulated, so the edge between two mipmap levels becomes a
-  4x4 dither pattern instead of a hard band; `1` forces it for every game.
-- **OSD shows how the other cores run**: `SMP RING0`, `PAGING`, `FLAT`
-  (DOS), `GLSMP` (Windows 9x), `THREADS` (Windows NT/XP, Wine) or `OFF`.
-- **`GLIDULATOR_SCREENSHOT=2`**: screenshots include the OSD.
-- **Hyper-Threading with the BIOS option "CPUID Limit"** (DOS and Windows
-  9x): siblings are no longer counted as cores of their own.
-- **8.4 MB less memory** for the texture cache; Pył loads its levels
-  without HDPMI32i.
-- Shared triangle edges are drawn exactly once; the start-up logo no
-  longer shows open pixels.
+- **Fixed: freeze after a minute or two with several cores** (Half-Life
+  and others, DOS and Windows 9x): a render worker's triangle could be
+  overwritten while it was still drawing it.
+- **Write-combining on machines with much RAM** (DOS and Windows 98):
+  memory above 4 GB no longer uses up the MTRRs the framebuffer needs.
+  Core i7-4790 with 32 GB: GLQuake 37.6 -> 56.3 fps, Nature 26.4 -> 48.7 fps.
+- **Windows 98 restores the original MTRRs on exit** again.
+- **Multi-core after Windows 98's "Restart in MS-DOS mode"** also under
+  HDPMI32i, with or without EMM386.
+- **One render worker on two cores**; before, two-core machines rendered
+  everything on the game's core.
+- **`GLIDULATOR_HT=1`** (experimental): Hyper-Threading siblings render
+  too; helps on two cores with Hyper-Threading.
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 

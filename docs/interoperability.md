@@ -41,6 +41,16 @@ your project.
     its reset state, the OVL programs it like the BIOS (SVR enabled, LINT0
     ExtINT, LINT1 NMI) so the 8259's interrupts keep flowing. The original
     MSR value is written back as soon as the other cores are stopped.
+- **In ring 3 under a host with paging (HDPMI32i)**, only for that APIC
+  case: the host's GDT is readable but not writable from ring 3, so the
+  OVL finds its physical page through the host's page tables (CR3 as the
+  host emulates it, DPMI 0800h), maps it a second time and uses two free
+  entries at the top of the GDT. For each MSR 1Bh access it writes a flat
+  ring-0 code descriptor and a call gate (DPL 3) there with `cmpxchg8b`,
+  calls through the gate (RDMSR/WRMSR, interrupts off) and clears both
+  entries right away. Nothing of ours stays in the GDT between the two
+  accesses (switch on, write back). If no free pair is found or the host
+  has no page tables (VDPMI), the OVL stays on one core.
 
 ### Other cores (APs)
 

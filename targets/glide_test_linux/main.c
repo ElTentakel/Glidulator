@@ -1533,6 +1533,24 @@ static int fsaa_scene(int threads) {
 static int test_fsaa(void) {
     printf("-- Test 18: FSAA (offset sample points) --\n");
     int fail = 0;
+    /* One worker (two cores): draws every line itself, bit-identical to
+     * rendering on the game's core */
+    if (fsaa_scene(1))
+        return 1;
+    memcpy(g_fsaa_ref, g_last_frame, sizeof g_fsaa_ref);
+    if (fsaa_scene(GLIDE_RENDERER_ONE_WORKER))
+        return 1;
+    if (glide_renderer_cores() != 2 || glide_renderer_threads() != 1) {
+        fprintf(stderr, "One worker: %d cores, %d threads (expected 2, 1)\n", glide_renderer_cores(),
+                glide_renderer_threads());
+        fail = 1;
+    } else if (memcmp(g_fsaa_ref, g_last_frame, sizeof g_fsaa_ref)) {
+        fprintf(stderr, "One worker differs from the game's core\n");
+        fail = 1;
+    } else {
+        printf("  one worker: bit-identical to the game's core\n");
+    }
+    glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
     static const char *const levels[] = { "2", "4" };
     for (int l = 0; l < 2; l++) {
         setenv("GLIDULATOR_FSAA", levels[l], 1);

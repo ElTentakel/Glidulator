@@ -152,6 +152,27 @@ int mtrr_plan_wc(const mtrr_state *in, uint64_t base, uint64_t size, mtrr_state 
     return write_out(in, list, n, base, size, out, used);
 }
 
+int mtrr_clip_4g(const mtrr_state *in, mtrr_state *out) {
+    const uint64_t g4 = 0x100000000ull;
+    int            n  = 0;
+    *out              = *in;
+    for (int i = 0; i < in->count; i++) {
+        range r;
+        out->var[i].base = 0;
+        out->var[i].mask = 0;
+        if (!(in->var[i].mask & VALID))
+            continue;
+        if (!to_range(&in->var[i], in->phys_bits, &r))
+            return 0;
+        if (r.base >= g4)
+            continue;
+        if (r.base + r.size > g4) /* aligned power of two: only from 0 */
+            r.size = g4;
+        out->var[n++] = from_range(r.base, r.size, r.type, in->phys_bits);
+    }
+    return 1;
+}
+
 uint64_t mtrr_wc_size(uint64_t phys, uint64_t need, uint64_t vram) {
     uint64_t s = 0x1000;
     while (s < need)

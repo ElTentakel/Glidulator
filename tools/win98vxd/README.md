@@ -28,7 +28,7 @@ display drivers garble the desktop when a console window opens.
 | 1 ECHO | | `CAFEBABE` | smoke test |
 | 2 ALLOC | | `{handle, linear, physical, pages}` | the VxD's small fixed block (AP page directory, identity page table, IDT) and the AP stacks |
 | 3 FREE | | | stops the cores first, then frees |
-| 4 START | `{xor lo, xor hi}` (test hook, normally 0) | `{alive, running, heartbeat, trampoline phys, APIC linear, status, usable, HT siblings, SMT shift, BSP core}` | INIT/SIPI to all other cores |
+| 4 START | `{xor lo, xor hi}` (test hook, normally 0), optional third word: flags (bit 0: Hyper-Threading siblings take slots too, `GLIDULATOR_HT=1`; read on the first start only) | `{alive, running, heartbeat, trampoline phys, APIC linear, status, usable, HT siblings, SMT shift, BSP core}`, with 72 bytes also the APIC ID of AP slots 0-7 | INIT/SIPI to all other cores |
 | 5 STATUS | | `{alive, running, heartbeat, parked, MSR 1Bh, faults, locks left, PDEs added, PDE clashes, locks, ROM-parked, ROM hlt address, PDE resyncs}` | |
 | 6 STOP | | | cores leave their loop, INIT, park in the BIOS ROM's hlt loop |
 | 7 DELAY | `{ms}` | | timing check of the VxD's wait |

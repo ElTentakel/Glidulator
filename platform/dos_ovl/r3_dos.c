@@ -217,3 +217,162 @@ uint32_t r3_sel_base(unsigned sel) {
 uint32_t r3_sel_limit(unsigned sel) {
     return lsl32(sel);
 }
+
+/* ---- Ring 0 through a call gate in the host's GDT ----
+ *
+ * Windows 98 leaves the local APIC switched off (MSR 1Bh bit 11) after
+ * "Restart in MS-DOS mode"; only ring 0 can switch it on again. Under
+ * HDPMI32i the GDT is readable from ring 3 (not writable), and DPMI 0800h
+ * maps any physical page. r3_gate_open() finds the GDT's physical pages
+ * through the host's page tables (CR3 is emulated by HDPMI), picks two
+ * free entries and keeps a writable second mapping of that page. Each
+ * r3_gate_msr() call then writes a flat ring-0 code descriptor and a
+ * call gate (DPL 3) into them, calls r0_entry through the gate (RDMSR or
+ * WRMSR with interrupts off, no stack of our own, DS stays the client's
+ * flat selector) and clears both entries again: between calls nothing of
+ * ours is in the GDT, and the calls need no DPMI service (crash path). */
+
+static volatile uint32_t g_r0_op, g_r0_msr, g_r0_lo, g_r0_hi;
+static uint32_t          g_gate_far[2];      /* offset, selector of the gate */
+static volatile uint32_t *g_gate_ent;        /* writable mapping of the two entries */
+static unsigned          g_gate_code_sel;    /* selector of our code descriptor */
+static uint32_t          g_gate_entry_off;   /* r0_entry */
+
+static void __declspec(naked) r0_entry(void) {
+    _asm {
+        pushfd
+        cli
+        push eax
+        push ecx
+        push edx
+        mov ecx, g_r0_msr
+        cmp g_r0_op, 1
+        jne r0_wr
+        db 0fh, 32h ; rdmsr
+        mov g_r0_lo, eax
+        mov g_r0_hi, edx
+        jmp r0_out
+    r0_wr:
+        mov eax, g_r0_lo
+        mov edx, g_r0_hi
+        db 0fh, 30h ; wrmsr
+    r0_out:
+        pop edx
+        pop ecx
+        pop eax
+        popfd
+        retf
+    }
+}
+
+static void gate_call(void) {
+    _asm {
+        call fword ptr g_gate_far
+    }
+}
+
+static void sgdt6(void *buf);
+#pragma aux sgdt6 = 0x0f 0x01 0x00 parm [eax]; /* sgdt [eax] */
+
+/* lock cmpxchg8b [edi]: *p == old -> *p = new; 1 on success */
+static int cas8(volatile uint32_t *p, uint32_t old_lo, uint32_t old_hi, uint32_t new_lo, uint32_t new_hi);
+#pragma aux cas8 = 0xf0 0x0f 0xc7 0x0f "setz al" "movzx eax, al" \
+    parm [edi] [eax] [edx] [ebx] [ecx] value [eax] modify [edx];
+
+/* Linear -> physical through the host's page tables; 0 if not present */
+static uint32_t lin_to_phys(uint32_t cr3, uint32_t lin) {
+    uint32_t *pd = (uint32_t *) r3_map_phys(cr3 & 0xfffff000u, 4096), d, t = 0;
+    if (!pd)
+        return 0;
+    d = pd[lin >> 22];
+    r3_unmap(pd);
+    if (!(d & 1))
+        return 0;
+    if (d & 0x80)
+        return (d & 0xffc00000u) | (lin & 0x3fffffu);
+    uint32_t *pt = (uint32_t *) r3_map_phys(d & 0xfffff000u, 4096);
+    if (!pt)
+        return 0;
+    t = pt[(lin >> 12) & 1023];
+    r3_unmap(pt);
+    return (t & 1) ? (t & 0xfffff000u) | (lin & 0xfffu) : 0;
+}
+
+int r3_gate_open(uint32_t cr3) {
+    uint8_t raw[6];
+    if (g_gate_ent)
+        return 1;
+    if (!cr3)
+        return 0;
+    sgdt6(raw);
+    uint32_t limit = raw[0] | (raw[1] << 8);
+    uint32_t base  = raw[2] | (raw[3] << 8) | (raw[4] << 16) | ((uint32_t) raw[5] << 24);
+    /* two consecutive free entries in one page, from the top (hosts fill
+     * their GDT from the bottom) */
+    for (uint32_t i = (limit + 1) / 8; i-- > 2;) {
+        uint32_t lin = base + (i - 1) * 8;
+        if ((lin & 0xfff) > 0xff0)
+            continue; /* the pair would cross a page */
+        uint32_t phys = lin_to_phys(cr3, lin);
+        if (!phys)
+            continue;
+        uint8_t *m = (uint8_t *) r3_map_phys(phys & 0xfffff000u, 4096);
+        if (!m)
+            return 0;
+        volatile uint32_t *e = (volatile uint32_t *) (m + (phys & 0xfff));
+        if (e[0] | e[1] | e[2] | e[3]) {
+            r3_unmap(m);
+            continue;
+        }
+        g_gate_ent       = e;
+        g_gate_code_sel  = (i - 1) * 8;
+        g_gate_far[0]    = 0;
+        g_gate_far[1]    = i * 8 | 3;
+        g_gate_entry_off = (uint32_t) r0_entry;
+        return 1;
+    }
+    return 0;
+}
+
+static int gate_run(void) {
+    uint32_t off = g_gate_entry_off;
+    /* code: base 0, limit 4 GB, 32 bit, present, DPL 0, execute/read */
+    if (!cas8(g_gate_ent, 0, 0, 0x0000ffffu, 0x00cf9a00u))
+        return 0;
+    /* 386 call gate: offset, our code selector, present, DPL 3, type C */
+    if (!cas8(g_gate_ent + 2, 0, 0, (g_gate_code_sel << 16) | (off & 0xffffu), (off & 0xffff0000u) | 0xec00u)) {
+        g_gate_ent[0] = g_gate_ent[1] = 0;
+        return 0;
+    }
+    int ok = 1;
+    if (g_guarded) {
+        ok = TRY(6, gate_call()); /* call fword ptr [disp32] = 6 bytes */
+    } else {
+        gate_call();
+    }
+    g_gate_ent[2] = g_gate_ent[3] = 0;
+    g_gate_ent[0] = g_gate_ent[1] = 0;
+    return ok;
+}
+
+int r3_gate_rdmsr(uint32_t msr, uint32_t *lo, uint32_t *hi) {
+    if (!g_gate_ent)
+        return 0;
+    g_r0_op  = 1;
+    g_r0_msr = msr;
+    if (!gate_run())
+        return 0;
+    *lo = g_r0_lo;
+    *hi = g_r0_hi;
+    return 1;
+}
+
+int r3_gate_wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
+    if (!g_gate_ent)
+        return 0;
+    g_r0_op  = 2;
+    g_r0_msr = msr;
+    g_r0_lo  = lo;
+    g_r0_hi  = hi;
+    return gate_run();
+}

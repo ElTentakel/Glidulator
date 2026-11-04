@@ -395,6 +395,74 @@ static int identity_mapped(uint32_t lin) {
     return (t & 1) && (t & 0xfffff000u) == (lin & 0xfffff000u);
 }
 
+/* Windows 98 clears the APIC's global enable bit (MSR 1Bh bit 11) and
+ * leaves it cleared after "Restart in MS-DOS mode"; CPUID then reports no
+ * APIC. In ring 0 the OVL sets the bit again while its APs run and writes
+ * the original value back when they stop, so nothing stays changed. Once
+ * re-enabled, the APIC is in its reset state: software-disabled with
+ * LINT0/LINT1 masked, which would block the 8259's interrupts. It is then
+ * programmed like the BIOS does (virtual wire mode). In ring 3 (HDPMI32i)
+ * the MSR goes through a temporary call gate (r3_gate_*, r3_dos.c). */
+static unsigned g_apic_off_lo, g_apic_off_hi; /* original MSR 1Bh value */
+static int      g_apic_reenable;              /* the APIC must be switched on for the APs */
+static int      g_apic_on;                    /* switched on by us right now */
+
+static int madt_apics(void);
+
+static volatile uint32_t *g_apic_regs; /* ring 3: mapped APIC registers */
+static int                g_apic_ring3; /* ring 3: MSR 1Bh through the call gate (r3_dos.c) */
+
+static int apic_enable(void) {
+    if (!g_apic_reenable || g_apic_on)
+        return 1;
+    if (g_apic_ring3) {
+        if (!r3_gate_wrmsr(MSR_APICBASE, g_apic_off_lo | APIC_EN, g_apic_off_hi))
+            return 0;
+        if (!(cpuid1_edx() & (1u << 9))) {
+            r3_gate_wrmsr(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+            return 0;
+        }
+        volatile uint32_t *a = g_apic_regs;
+        if (!(a[APIC_SVR / 4] & 0x100)) {
+            a[APIC_SVR / 4]  = 0x1ff;
+            a[APIC_LVT0 / 4] = 0x700;
+            a[APIC_LVT1 / 4] = 0x400;
+        }
+        g_apic_on = 1;
+        return 1;
+    }
+    unsigned f = flags_cli();
+    wrmsr2(MSR_APICBASE, g_apic_off_lo | APIC_EN, g_apic_off_hi);
+    int ok = (cpuid1_edx() & (1u << 9)) != 0;
+    if (ok) {
+        volatile uint32_t *a = (volatile uint32_t *) (g_apic_off_lo & 0xfffff000u);
+        if (!(a[APIC_SVR / 4] & 0x100)) {
+            a[APIC_SVR / 4]  = 0x1ff; /* software enable first: masks cannot be cleared before */
+            a[APIC_LVT0 / 4] = 0x700; /* ExtINT: the 8259 through LINT0 */
+            a[APIC_LVT1 / 4] = 0x400; /* NMI */
+        }
+        g_apic_on = 1;
+    } else {
+        wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+    }
+    flags_restore(f);
+    return ok;
+}
+
+static void apic_restore(void) {
+    if (!g_apic_on)
+        return;
+    if (g_apic_ring3) {
+        r3_gate_wrmsr(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+        g_apic_on = 0;
+        return;
+    }
+    unsigned f = flags_cli();
+    wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
+    g_apic_on = 0;
+    flags_restore(f);
+}
+
 /* Ring 3: which host, and can the APs share its address space? */
 static int check_ring3(int want) {
     uint32_t cr0 = 0, cr3 = 0, cr4 = 0, lo = 0, hi = 0;
@@ -417,7 +485,41 @@ static int check_ring3(int want) {
     }
     int ok0 = r3_try_read_cr(0, &cr0), ok3 = r3_try_read_cr(3, &cr3), ok4 = r3_try_read_cr(4, &cr4);
     int okm = r3_try_rdmsr(MSR_APICBASE, &lo, &hi);
+    /* Windows 98 switched the APIC off ("Restart in MS-DOS mode"): CPUID
+     * shows none, MSR 1Bh is ring 0 only (HDPMI: #GP). With ACPI listing
+     * several APICs, switch it on through a call gate while the extra
+     * cores run (needs the host's page tables: paging without PAE). */
+    cpuid_full(1, 0, r);
+    if (!(r[3] & (1u << 9)) && (r[3] & (1u << 5)) && (r[3] & (1u << 4)) && ok0 && ok3 && cr3 && (cr0 & CR0_PG) &&
+        !(cr4 & CR4_PAE) && madt_apics() >= 2) {
+        uint32_t ml = 0, mh = 0;
+        if (!r3_gate_open(cr3) || !r3_gate_rdmsr(MSR_APICBASE, &ml, &mh)) {
+            LOG_SMP("APIC switched off (e.g. by Windows 98), no call gate to ring 0", -1);
+        } else if (!(ml & APIC_EN) && (ml & 0x100) && !mh && !(ml & 0x400) &&
+                   (g_apic_regs = (volatile uint32_t *) r3_map_phys(ml & 0xfffff000u, 4096)) != 0) {
+            g_apic_off_lo   = ml;
+            g_apic_off_hi   = mh;
+            g_apic_reenable = 1;
+            g_apic_ring3    = 1;
+            if (apic_enable()) {
+                LOG_SMP("APIC was switched off (e.g. by Windows 98): on through a call gate while the extra cores run",
+                        -1);
+                lo  = ml | APIC_EN;
+                hi  = mh;
+                okm = 1;
+            } else {
+                g_apic_reenable = 0;
+                g_apic_ring3    = 0;
+                r3_unmap((void *) g_apic_regs);
+                g_apic_regs = 0;
+            }
+        }
+    }
     r3_guard_end();
+    if (!(cpuid1_edx() & (1u << 9))) {
+        LOG_SMP("off (no APIC)", -1);
+        return 0;
+    }
     uint32_t apic = 0xfee00000u;
     if (okm) {
         if (!(lo & 0x800) || !(lo & 0x100) || hi) {
@@ -472,49 +574,6 @@ static int check_ring3(int want) {
     return 1;
 }
 
-/* Windows 98 clears the APIC's global enable bit (MSR 1Bh bit 11) and
- * leaves it cleared after "Restart in MS-DOS mode"; CPUID then reports no
- * APIC. In ring 0 the OVL sets the bit again while its APs run and writes
- * the original value back when they stop, so nothing stays changed. Once
- * re-enabled, the APIC is in its reset state: software-disabled with
- * LINT0/LINT1 masked, which would block the 8259's interrupts. It is then
- * programmed like the BIOS does (virtual wire mode). */
-static unsigned g_apic_off_lo, g_apic_off_hi; /* original MSR 1Bh value */
-static int      g_apic_reenable;              /* the APIC must be switched on for the APs */
-static int      g_apic_on;                    /* switched on by us right now */
-
-static int madt_apics(void);
-
-static int apic_enable(void) {
-    if (!g_apic_reenable || g_apic_on)
-        return 1;
-    unsigned f = flags_cli();
-    wrmsr2(MSR_APICBASE, g_apic_off_lo | APIC_EN, g_apic_off_hi);
-    int ok = (cpuid1_edx() & (1u << 9)) != 0;
-    if (ok) {
-        volatile uint32_t *a = (volatile uint32_t *) (g_apic_off_lo & 0xfffff000u);
-        if (!(a[APIC_SVR / 4] & 0x100)) {
-            a[APIC_SVR / 4]  = 0x1ff; /* software enable first: masks cannot be cleared before */
-            a[APIC_LVT0 / 4] = 0x700; /* ExtINT: the 8259 through LINT0 */
-            a[APIC_LVT1 / 4] = 0x400; /* NMI */
-        }
-        g_apic_on = 1;
-    } else {
-        wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
-    }
-    flags_restore(f);
-    return ok;
-}
-
-static void apic_restore(void) {
-    if (!g_apic_on)
-        return;
-    unsigned f = flags_cli();
-    wrmsr2(MSR_APICBASE, g_apic_off_lo, g_apic_off_hi);
-    g_apic_on = 0;
-    flags_restore(f);
-}
-
 static int check(void) {
     unsigned lo, hi;
     if (g_state)
@@ -533,11 +592,13 @@ static int check(void) {
             return 0;
         }
         unsigned edx = cpuid1_edx();
-        if (!(edx & (1u << 9)) || !(edx & (1u << 4))) {
-            LOG_SMP("off (no APIC/TSC)", -1);
+        if (!(edx & (1u << 4))) { /* no APIC: check_ring3() tries to switch it on */
+            LOG_SMP("off (no TSC)", -1);
             return 0;
         }
-        if (!check_ring3(want))
+        int ok = check_ring3(want);
+        apic_restore(); /* start_aps() switches it on again */
+        if (!ok)
             return 0;
     } else {
         if (get_cr0() & CR0_PG) {
@@ -638,26 +699,51 @@ static unsigned my_apic_id(void) {
     return r[1] >> 24;
 }
 
+/* Where smt_shift() took its answer from (trace log). */
+static const char *g_smt_src = "";
+
+/* GLIDULATOR_HT=1 (experimental): Hyper-Threading siblings count as cores
+ * of their own and get workers too. Helps on 2 cores + HT; with 4 cores
+ * the siblings take workers away from real cores (slower). */
+static int ht_all(void) {
+    char cfg[4];
+    return platform_get_config("GLIDULATOR_HT", cfg, sizeof cfg) && cfg[0] == '1' && !cfg[1];
+}
+
+static unsigned smt_shift_hw(void);
+
+/* SMT bits used for targeting: 0 with GLIDULATOR_HT=1 (every logical CPU
+ * is its own target). */
 static unsigned smt_shift(void) {
+    return ht_all() ? 0 : smt_shift_hw();
+}
+
+static unsigned smt_shift_hw(void) {
     unsigned r[4], ml = max_leaf();
     if (ml >= 0xb) {
         cpuid_full(0xb, 0, r);
-        if ((r[1] & 0xffff) && ((r[2] >> 8) & 0xff) == 1) /* level 0 = SMT */
+        if ((r[1] & 0xffff) && ((r[2] >> 8) & 0xff) == 1) { /* level 0 = SMT */
+            g_smt_src = "leaf 0Bh";
             return r[0] & 31;
+        }
     }
     unsigned v[4];
     cpuid_full(0, 0, v);
     cpuid_full(1, 0, r);
-    if (!(r[3] & (1u << 28)))
+    if (!(r[3] & (1u << 28))) {
+        g_smt_src = "no HTT flag";
         return 0;
+    }
     /* BIOS option "CPUID Limit" (Intel) hides leaves 4 and 0Bh. From Nehalem
      * on (family 6, model 1Ah+, except Dunnington 1Dh) Intel reserves one SMT
      * bit even with HT off (IDs 0, 2, 4, ...), so 1 keeps every core and
      * drops the siblings. Core 2 numbers its cores 0, 1, 2, ...: keep 0. */
     if (ml < 4) {
         unsigned model = ((r[0] >> 4) & 15) | ((r[0] >> 12) & 0xf0);
-        return v[1] == 0x756e6547 && v[3] == 0x49656e69 && v[2] == 0x6c65746e && /* "GenuineIntel" */
-               ((r[0] >> 8) & 15) == 6 && model >= 0x1a && model != 0x1d;
+        unsigned sh    = v[1] == 0x756e6547 && v[3] == 0x49656e69 && v[2] == 0x6c65746e && /* "GenuineIntel" */
+                      ((r[0] >> 8) & 15) == 6 && model >= 0x1a && model != 0x1d;
+        g_smt_src = sh ? "CPUID Limit rule (Intel Nehalem+)" : "CPUID Limit, no rule applies";
+        return sh;
     }
     unsigned logical = (r[1] >> 16) & 0xff;
     cpuid_full(4, 0, r);
@@ -665,6 +751,7 @@ static unsigned smt_shift(void) {
     unsigned per   = cores ? logical / cores : 1, sh = 0;
     while ((1u << sh) < per)
         sh++;
+    g_smt_src = "leaves 1 and 4";
     return sh;
 }
 
@@ -856,7 +943,7 @@ static int plan_targets(void) {
     cpuid_full(0xb, 0, r);
     if (((r[2] >> 8) & 0xff) != 1 || !(r[1] & 0xffff))
         return -1;
-    unsigned sh = r[0] & 31;
+    unsigned sh = ht_all() ? 0 : r[0] & 31;
     cpuid_full(0xb, 1, r);
     if (((r[2] >> 8) & 0xff) != 2 || !(r[1] & 0xffff))
         return -1;
@@ -1139,23 +1226,31 @@ static int start_aps(void) {
         g_state = -1;
         return 0;
     }
-    /* One AP per physical core, excluding the main core's core */
-    unsigned sh   = smt_shift();
+    /* One AP per physical core, excluding the main core's core. With
+     * GLIDULATOR_HT=1 the siblings follow (workers are handed out in this
+     * order): those of the other cores first, the main core's own last. */
+    unsigned sh   = smt_shift_hw();
     unsigned bsp  = my_apic_id() >> sh;
     unsigned used[AP_MAX];
-    int      nord = 0;
-    for (int i = 0; i < AP_MAX && i < (int) n; i++) {
-        if (!g_slot[i].ready)
-            continue;
-        unsigned core = g_slot[i].apic >> sh;
-        int      dup  = core == bsp;
-        for (int k = 0; k < nord && !dup; k++)
-            dup = used[k] == core;
-        if (dup)
-            continue;
-        used[nord]      = core;
-        g_order[nord++] = i;
-    }
+    int      nord = 0, ht = ht_all();
+    for (int pass = 0; pass < (ht ? 3 : 1); pass++)
+        for (int i = 0; i < AP_MAX && i < (int) n; i++) {
+            if (!g_slot[i].ready)
+                continue;
+            unsigned core = g_slot[i].apic >> sh;
+            int      dup  = core == bsp;
+            for (int k = 0; k < nord && !dup; k++)
+                dup = used[k] == core;
+            if (pass == 0 ? dup : pass == 1 ? core == bsp || !dup : core != bsp)
+                continue;
+            int taken = 0;
+            for (int k = 0; k < nord && !taken; k++)
+                taken = g_order[k] == i;
+            if (taken)
+                continue;
+            used[nord]      = core;
+            g_order[nord++] = i;
+        }
     g_norder = nord;
     /* unused APs halt 200 ms from now */
     uint64_t now = tsc64();
@@ -1176,6 +1271,15 @@ static int start_aps(void) {
             *p++ = ' ';
             p    = put_dec(p, g_slot[i].apic);
         }
+        *p++ = '\n';
+        *p   = 0;
+        platform_log(line);
+        p    = put_s(line, "Multi-core: CPUID max leaf ");
+        p    = put_dec(p, max_leaf());
+        p    = put_s(p, ", SMT bits from ");
+        p    = put_s(p, g_smt_src);
+        if (ht)
+            p = put_s(p, ", GLIDULATOR_HT=1: siblings get workers too");
         *p++ = '\n';
         *p   = 0;
         platform_log(line);
@@ -1210,7 +1314,9 @@ int platform_core_count(void) {
         } else if (check()) {
             g_count = start_aps();
             stop_aps();
-            LOG_SMP("usable additional cores (one per physical core): ", g_count);
+            LOG_SMP(ht_all() ? "usable additional cores (GLIDULATOR_HT=1: one per logical CPU): "
+                                 : "usable additional cores (one per physical core): ",
+                        g_count);
         }
     }
     return 1 + g_count;

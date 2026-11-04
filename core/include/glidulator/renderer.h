@@ -32,9 +32,14 @@ const char *glide_renderer_name(int kind);
 int glide_renderer_parse(const char *s);
 /* Is the path built in and usable on this CPU/platform? */
 int glide_renderer_available(int kind);
-/* Highest useful thread count: cores other than the calling one, at most
- * GLIDE_MT_MAX; 1 if fewer than two other cores exist. */
+/* Highest useful worker count: cores other than the calling one, at most
+ * GLIDE_MT_MAX; 1 also when there is no other core (then rendering stays
+ * on the game's core). */
 int glide_renderer_max_threads(void);
+
+/* glide_renderer_force() threads value for exactly one render worker (a
+ * plain 1 means "on the game's core", like GLIDULATOR_THREADS=1). */
+#define GLIDE_RENDERER_ONE_WORKER (-1)
 
 /* For test tools (glide_replay, tests): force a choice instead of reading
  * the configuration. kind = GLIDE_RENDERER_AUTO and threads = 0 mean "from

@@ -28,4 +28,12 @@ void  r3_unmap(void *lin);
 uint32_t r3_sel_base(unsigned sel);
 uint32_t r3_sel_limit(unsigned sel);
 
+/* Ring 0 for MSR accesses through a temporary call gate in the host's GDT
+ * (r3_dos.c). r3_gate_open: needs the host's CR3 (paging, no PAE) and two
+ * free GDT entries; maps them once. The MSR calls need no DPMI service
+ * and leave nothing in the GDT. 1 = ok. */
+int r3_gate_open(uint32_t cr3);
+int r3_gate_rdmsr(uint32_t msr, uint32_t *lo, uint32_t *hi);
+int r3_gate_wrmsr(uint32_t msr, uint32_t lo, uint32_t hi);
+
 #endif

@@ -39,6 +39,7 @@
 static HANDLE g_vxd = INVALID_HANDLE_VALUE;
 static int    g_vxd_state; /* 0 not tried, 1 up, -1 unavailable */
 static int    g_vxd_aps;   /* APs running worker slots */
+static int    g_vxd_map[VXD_MAX_AP]; /* worker core_id - 1 -> VxD AP index */
 static struct {
     void *p;
     DWORD n;
@@ -79,8 +80,11 @@ static void block_add(void *p, size_t n) {
     if (g_nblocks < VXD_MAX_BLOCKS) {
         g_blocks[g_nblocks].p   = p;
         g_blocks[g_nblocks++].n = (DWORD) n;
-    } else if (!g_vxd_state)
-        g_vxd_state = -1; /* could not lock it later: stay on one core */
+    } else {
+        vxd_log("Multi-core: block table full (%lu), %08lX stays unlocked\n", (DWORD) g_nblocks, (DWORD) p);
+        if (!g_vxd_state)
+            g_vxd_state = -1; /* could not lock it later: stay on one core */
+    }
     if (g_vxd_state > 0 && !vxd_lock(p, (DWORD) n, VXD_LOCK))
         vxd_log("Multi-core: VxD lock of %08lX failed\n", (DWORD) p, 0);
 }
@@ -98,7 +102,7 @@ static void block_remove(void *p) {
 /* Load the VxD, lock what workers touch, start the APs. Once. */
 static int vxd_up(void) {
     char  dir[MAX_PATH], path[MAX_PATH + 8], cfg[8];
-    DWORD in[2] = {0, 0}, st[10] = {0}, r = 0;
+    DWORD in[3] = {0, 0, 0}, st[10 + VXD_MAX_AP] = {0}, r = 0;
     MEMORY_BASIC_INFORMATION mbi;
     if (g_vxd_state)
         return g_vxd_state > 0;
@@ -109,6 +113,9 @@ static int vxd_up(void) {
         return 0;
     if (platform_get_config("GLIDULATOR_THREADS", cfg, sizeof cfg) && cfg[0] == '1' && !cfg[1])
         return 0; /* one core wanted: do not start any */
+    /* GLIDULATOR_HT=1 (experimental): Hyper-Threading siblings get worker
+     * slots too (input word 2, bit 0) */
+    in[2] = platform_get_config("GLIDULATOR_HT", cfg, sizeof cfg) && cfg[0] == '1' && !cfg[1];
     if (!VirtualQuery(&g_vxd, &mbi, sizeof mbi) || /* an address in this DLL */
         !GetModuleFileNameA((HMODULE) mbi.AllocationBase, dir, sizeof dir))
         return 0;
@@ -142,8 +149,35 @@ static int vxd_up(void) {
      * main core's; Hyper-Threading siblings (st[7]) stay parked */
     g_vxd_aps   = st[6] > VXD_MAX_AP ? VXD_MAX_AP : (int) st[6];
     g_vxd_state = 1;
-    vxd_log("Multi-core: Windows 9x VxD up, %lu additional cores (%lu Hyper-Threading siblings unused)\n",
+    for (int i = 0; i < VXD_MAX_AP; i++)
+        g_vxd_map[i] = i;
+    if (in[2] && r >= 40 + 4 * VXD_MAX_AP) {
+        /* Workers are handed out in core_id order: first one AP per other
+         * physical core, then the other cores' siblings, the main core's
+         * sibling last (st[8] = SMT bits, st[9] = main core) */
+        int n = 0;
+        for (int pass = 0; pass < 3; pass++)
+            for (int i = 0; i < g_vxd_aps; i++) {
+                DWORD core = (st[10 + i] >> st[8]) & 255;
+                int   first = 1, taken = 0;
+                for (int k = 0; k < i; k++)
+                    if (((st[10 + k] >> st[8]) & 255) == core)
+                        first = 0;
+                for (int k = 0; k < n; k++)
+                    taken |= g_vxd_map[k] == i;
+                if (taken || (pass == 0 ? !first || core == st[9] : pass == 1 ? first || core == st[9] : core != st[9]))
+                    continue;
+                g_vxd_map[n++] = i;
+            }
+        for (int k = 0; k < n; k++)
+            vxd_log("Multi-core: worker %lu on APIC %lu\n", (DWORD) k + 1, st[10 + g_vxd_map[k]]);
+    }
+    vxd_log(in[2] ? "Multi-core: Windows 9x VxD up, %lu additional logical CPUs (GLIDULATOR_HT=1, %lu siblings unused)\n"
+                  : "Multi-core: Windows 9x VxD up, %lu additional cores (%lu Hyper-Threading siblings unused)\n",
             (DWORD) g_vxd_aps, st[7]);
+    /* max leaf < 4 means the BIOS option "CPUID Limit" is on and the VxD
+     * took the SMT bits from its rule for that case */
+    vxd_log("Multi-core: CPUID max leaf %lu, SMT bits %lu\n", (DWORD) __get_cpuid_max(0, NULL), st[8]);
     return 1;
 }
 
@@ -299,8 +333,8 @@ static platform_worker *vxd_spawn(platform_worker *w, int core_id) {
     __asm__ volatile("fnstcw %0" : "=m"(cw));
     if (platform_cpu_features() & PLATFORM_CPU_SSE)
         __asm__ volatile("stmxcsr %0" : "=m"(mxcsr));
-    DWORD in[5] = {(DWORD) (core_id - 1), (DWORD) w->fn, (DWORD) w->arg, cw, mxcsr};
-    w->ap       = core_id - 1;
+    DWORD in[5] = {(DWORD) g_vxd_map[core_id - 1], (DWORD) w->fn, (DWORD) w->arg, cw, mxcsr};
+    w->ap       = g_vxd_map[core_id - 1];
     if (!DeviceIoControl(g_vxd, VXD_RUN, in, sizeof in, &st, sizeof st, &r, NULL) || st) {
         vxd_log("Multi-core: VxD refused worker %lu (status %lu)\n", (DWORD) core_id, st);
         HeapFree(GetProcessHeap(), 0, w);
@@ -634,6 +668,100 @@ int platform_display_size(int *w, int *h) {
     return 1;
 }
 
+#ifdef GLIDULATOR_TRACE
+/* Stall watchdog: when no frame reaches blit_any for 4 s, a separate
+ * thread suspends the game thread (the thread of grSstWinOpen), copies its
+ * registers and the top of its stack, resumes it, and only then logs (a
+ * suspended thread may hold a kernel or heap lock that logging needs).
+ * Every stack word inside a loaded module is logged as module + offset,
+ * so a hang shows where the game thread waits. Repeats every 10 s while
+ * the stall lasts (moving EIP = loop, same EIP = blocked). */
+#    define WD_STACK 64
+static volatile LONG g_wd_beat, g_wd_stop;
+static HANDLE        g_wd_game, g_wd_thread;
+
+static void wd_log_addr(const char *what, DWORD a) {
+    MEMORY_BASIC_INFORMATION mbi;
+    char                     mod[MAX_PATH] = "", line[MAX_PATH + 64];
+    if (VirtualQuery((const void *) (UINT_PTR) a, &mbi, sizeof mbi) && mbi.Type == MEM_IMAGE &&
+        GetModuleFileNameA((HMODULE) mbi.AllocationBase, mod, sizeof mod)) {
+        const char *base = strrchr(mod, '\\');
+        wsprintfA(line, "Stall: %s %08lx = %s+%lx\n", what, (unsigned long) a, base ? base + 1 : mod,
+                  (unsigned long) (a - (DWORD) (UINT_PTR) mbi.AllocationBase));
+        platform_log(line);
+    } else if (what[0] != 's') { /* stack words outside modules are noise */
+        wsprintfA(line, "Stall: %s %08lx\n", what, (unsigned long) a);
+        platform_log(line);
+    }
+}
+
+static DWORD WINAPI wd_main(LPVOID arg) {
+    LONG  last  = g_wd_beat;
+    DWORD quiet = 0;
+    (void) arg;
+    while (!g_wd_stop) {
+        Sleep(1000);
+        LONG beat = g_wd_beat;
+        if (beat != last) {
+            if (quiet >= 4)
+                platform_log("Stall: frames again\n");
+            last  = beat;
+            quiet = 0;
+            continue;
+        }
+        quiet++;
+        if (quiet != 4 && (quiet < 4 || (quiet - 4) % 10))
+            continue;
+        CONTEXT ctx;
+        DWORD   stack[WD_STACK], n = 0;
+        memset(&ctx, 0, sizeof ctx);
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        if (SuspendThread(g_wd_game) == (DWORD) -1)
+            continue;
+        int ok = GetThreadContext(g_wd_game, &ctx);
+        if (ok)
+            for (; n < WD_STACK && !IsBadReadPtr((const void *) (UINT_PTR) (ctx.Esp + 4 * n), 4); n++)
+                stack[n] = ((const DWORD *) (UINT_PTR) ctx.Esp)[n];
+        ResumeThread(g_wd_game);
+        char line[160];
+        wsprintfA(line, "Stall: no frame for %lu s, game thread EIP %08lx ESP %08lx EBP %08lx EAX %08lx ECX %08lx\n",
+                  (unsigned long) quiet, (unsigned long) ctx.Eip, (unsigned long) ctx.Esp, (unsigned long) ctx.Ebp,
+                  (unsigned long) ctx.Eax, (unsigned long) ctx.Ecx);
+        platform_log(ok ? line : "Stall: GetThreadContext failed\n");
+        if (!ok)
+            continue;
+        wd_log_addr("EIP", ctx.Eip);
+        for (DWORD i = 0; i < n; i++) {
+            char what[16];
+            wsprintfA(what, "stack+%02lx", (unsigned long) (4 * i));
+            wd_log_addr(what, stack[i]);
+        }
+    }
+    return 0;
+}
+
+static void wd_start(void) {
+    DWORD tid;
+    if (g_wd_thread)
+        return;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &g_wd_game,
+                         THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0))
+        return;
+    g_wd_stop   = 0;
+    g_wd_thread = CreateThread(NULL, 0, wd_main, NULL, 0, &tid);
+}
+
+static void wd_stop(void) {
+    if (!g_wd_thread)
+        return;
+    g_wd_stop = 1;
+    WaitForSingleObject(g_wd_thread, 3000);
+    CloseHandle(g_wd_thread);
+    CloseHandle(g_wd_game);
+    g_wd_thread = g_wd_game = NULL;
+}
+#endif
+
 void platform_display_open(int w, int h) {
     char cfg[24];
     platform_display_close();
@@ -661,6 +789,7 @@ void platform_display_open(int w, int h) {
     log_window("Program window (active)", GetActiveWindow());
     if (!g_trace_hook)
         g_trace_hook = SetWindowsHookExA(WH_CALLWNDPROC, trace_hook_proc, NULL, GetCurrentThreadId());
+    wd_start();
 #endif
     g_hwnd = create_own_window();
     while (ShowCursor(FALSE) >= 0 && g_cursor_hidden < 100)
@@ -683,6 +812,7 @@ void platform_display_open(int w, int h) {
 void platform_display_close(void) {
     wc_win9x_off();
 #ifdef GLIDULATOR_TRACE
+    wd_stop();
     if (g_trace_hook)
         UnhookWindowsHookEx(g_trace_hook);
     g_trace_hook = NULL;
@@ -761,6 +891,7 @@ static void blit_any(const void *pixels, int w, int h, int stride_bytes, int src
     int  bpp, x, y, rw, rh;
 #ifdef GLIDULATOR_TRACE
     uint64_t t0 = platform_time_us(), t1;
+    InterlockedIncrement(&g_wd_beat);
 #endif
     if (!g_hwnd || !g_outbuf || !g_conv32 || !g_conv16 || w != g_w || h != g_h)
         return;

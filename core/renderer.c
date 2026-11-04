@@ -64,7 +64,7 @@ int glide_renderer_max_threads(void) {
     int n = platform_core_count() - 1;
     if (n > GLIDE_MT_MAX)
         n = GLIDE_MT_MAX;
-    return n >= 2 ? n : 1;
+    return n >= 1 ? n : 1;
 }
 
 void glide_renderer_force(int kind, int threads) {
@@ -115,6 +115,8 @@ static void log_choice(int want, int want_threads) {
     }
     p = put(p, end, ", Threads ");
     p = put_int(p, end, g_threads);
+    if (!glide_mt_workers())
+        p = put(p, end, " (game's core)");
     if (want_threads && want_threads != g_threads) {
         p = put(p, end, " (requested ");
         p = put_int(p, end, want_threads);
@@ -152,8 +154,17 @@ void glide_renderer_apply(void) {
     else
         g_active = glide_renderer_available(GLIDE_RENDERER_JIT) ? GLIDE_RENDERER_JIT : GLIDE_RENDERER_C;
 
+    /* Workers: GLIDULATOR_THREADS=1 renders on the game's core; otherwise
+     * one per other core up to the request. With two cores that is one
+     * worker: it does not draw faster than the game's core, but the game
+     * prepares the next triangles while it draws (2026-11-02, VOGONS). */
     int max   = glide_renderer_max_threads();
+    int sync  = want_threads == 1 || platform_core_count() < 2;
+    if (want_threads == GLIDE_RENDERER_ONE_WORKER)
+        want_threads = 1;
     g_threads = (want_threads <= 0 || want_threads > max) ? max : want_threads;
+    if (sync)
+        g_threads = 1;
 
 #ifndef NO_CODEGEN
     /* Hook up the code blocks (g_voodoo is zeroed by grSstWinOpen); without
@@ -165,7 +176,7 @@ void glide_renderer_apply(void) {
     g_voodoo.render_threads = g_threads;
     /* Start workers only now (they read render_threads); if that fails,
      * continue on one core. */
-    if (g_threads >= 2 && !glide_mt_start(g_threads)) {
+    if (!sync && !glide_mt_start(g_threads)) {
         g_threads               = 1;
         g_voodoo.render_threads = 1;
     }
@@ -183,6 +194,5 @@ int glide_renderer_threads(void) {
 }
 
 int glide_renderer_cores(void) {
-    int t = glide_renderer_threads();
-    return t >= 2 ? t + 1 : 1; /* workers plus the game's core */
+    return glide_mt_workers() ? g_threads + 1 : 1; /* workers plus the game's core */
 }
