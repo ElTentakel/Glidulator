@@ -80,6 +80,10 @@ static glide_capture_cmd *next_cmd(uint32_t kind) {
     c->reg[CAP_ZACOLOR]       = g_voodoo.params.zaColor;
     c->reg[CAP_CHROMAKEY]     = g_voodoo.params.chromaKey;
     c->reg[CAP_STW_HINT]      = g_sw.stw_hint;
+    c->reg[CAP_TEXTUREMODE1]  = g_voodoo.params.textureMode[1];
+    c->reg[CAP_TLOD1]         = g_voodoo.params.tLOD[1];
+    c->reg[CAP_TEXBASEADDR1]  = g_voodoo.params.texBaseAddr[1];
+    c->reg[CAP_NUM_TMUS]      = (uint32_t) g_num_tmus;
     return c;
 }
 
@@ -119,14 +123,16 @@ static struct {
     glide_capture_tables t;
 } g_tab; /* static: 1.2 KB would be needlessly tight on the OVL's stack */
 
-static void write_tables(const char *name) {
+/* name: TEXnn.BIN for TMU0 (tables to TABnn.BIN), TX1nn.BIN for TMU1
+ * (tables to TB1nn.BIN) */
+static void write_tables(const char *name, int tmu) {
     for (int i = 0; i < 256; i++)
-        g_tab.t.palette[i] = g_voodoo.palette[0][i].u;
+        g_tab.t.palette[i] = g_voodoo.palette[tmu][i].u;
     for (int t = 0; t < 2; t++)
         for (int k = 0; k < 4; k++) {
-            g_tab.t.ncc[t][k]     = g_voodoo.nccTable[0][t].y[k];
-            g_tab.t.ncc[t][4 + k] = g_voodoo.nccTable[0][t].i[k];
-            g_tab.t.ncc[t][8 + k] = g_voodoo.nccTable[0][t].q[k];
+            g_tab.t.ncc[t][k]     = g_voodoo.nccTable[tmu][t].y[k];
+            g_tab.t.ncc[t][4 + k] = g_voodoo.nccTable[tmu][t].i[k];
+            g_tab.t.ncc[t][8 + k] = g_voodoo.nccTable[tmu][t].q[k];
         }
     for (int i = 0; i < 64; i++) {
         g_tab.t.fog[i][0] = g_voodoo.params.fogTable[i].fog;
@@ -136,12 +142,12 @@ static void write_tables(const char *name) {
                         ((uint32_t) g_voodoo.params.fogColor.g << 8) | g_voodoo.params.fogColor.b;
     /* platform_write_file writes a whole file at once, hence separate files
      * for texture memory and tables. */
-    platform_write_file(name, g_voodoo.tex_mem[0], TEX_MEM_BYTES);
+    platform_write_file(name, g_voodoo.tex_mem[tmu], TEX_MEM_BYTES);
     char tname[12];
     memcpy(tname, name, 12);
     tname[0] = 'T';
-    tname[1] = 'A';
-    tname[2] = 'B';
+    tname[1] = tmu ? 'B' : 'A';
+    tname[2] = tmu ? '1' : 'B';
     platform_write_file(tname, &g_tab.t, sizeof g_tab.t);
 }
 
@@ -168,7 +174,12 @@ void glide_capture_swap(void) {
             memcpy(tex, "TEX00.BIN", 10);
             tex[3] = name[3];
             tex[4] = name[4];
-            write_tables(tex); /* TEXnn.BIN + TABnn.BIN */
+            write_tables(tex, 0); /* TEXnn.BIN + TABnn.BIN */
+            if (g_num_tmus > 1) {
+                tex[1] = 'X';
+                tex[2] = '1';
+                write_tables(tex, 1); /* TX1nn.BIN + TB1nn.BIN */
+            }
         }
         g_cap.h.magic   = GLIDE_CAPTURE_MAGIC;
         g_cap.h.version = GLIDE_CAPTURE_VERSION;

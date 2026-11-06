@@ -1513,16 +1513,20 @@ static int test_output_osd(void) {
  * bit-identical. */
 static uint16_t g_fsaa_ref[320 * 240];
 
+static const int *g_scene_lines; /* fixed line counts of the workers, or NULL */
+
 static int fsaa_scene(int threads) {
     glide_renderer_force(GLIDE_RENDERER_AUTO, threads);
     if (open_320x240())
         return 1;
+    if (g_scene_lines && glide_mt_workers() >= 1)
+        glide_mt_test_lines(g_scene_lines);
     grDitherMode(GR_DITHER_DISABLE);
     grBufferClear(0, 0, 0);
     GrVertex a = vtx(20.5f, 10.25f, 255, 0, 0, 255, 0, 1, 0, 0);
     GrVertex b = vtx(300.0f, 60.75f, 255, 0, 0, 255, 0, 1, 0, 0);
     GrVertex c = vtx(70.25f, 230.5f, 255, 0, 0, 255, 0, 1, 0, 0);
-    for (int k = 0; k < 200; k++) /* enough to fill the workers' queue */
+    for (int k = 0; k < 300; k++) /* more than the queue holds (256) */
         grDrawTriangle(&a, &b, &c);
     g_copy_frame = 1;
     grBufferSwap(1);
@@ -1549,6 +1553,43 @@ static int test_fsaa(void) {
         fail = 1;
     } else {
         printf("  one worker: bit-identical to the game's core\n");
+    }
+    /* Uneven line distribution (load balancing, core/render_mt.c), also
+     * with the main core drawing: every line drawn exactly once,
+     * bit-identical. Lines per VOODOO_LINE_PERIOD (840): workers, then the
+     * main core (0 = it does not draw). */
+    static const struct {
+        int workers;
+        int lines[GLIDE_MT_MAX + 1];
+    } uneven[] = {
+        { 4, { 400, 200, 140, 100, 0 } },
+        { 1, { 500, 340 } },
+        { 3, { 400, 200, 140, 100 } },
+        { 4, { 300, 200, 150, 110, 80 } },
+        { 7, { 200, 150, 120, 100, 90, 80, 60, 40 } },
+    };
+    for (int k = 0; k < (int) (sizeof uneven / sizeof uneven[0]); k++) {
+        int        t = uneven[k].workers;
+        const int *l = uneven[k].lines;
+        if (glide_renderer_max_threads() < t)
+            continue;
+        g_scene_lines = l;
+        if (fsaa_scene(t == 1 ? GLIDE_RENDERER_ONE_WORKER : t))
+            return 1;
+        g_scene_lines = NULL;
+        int main_core = t < GLIDE_MT_MAX && l[t] > 0;
+        int last      = main_core ? t : t - 1; /* main core, or the last worker */
+        int got       = glide_mt_workers() == t ? glide_mt_lines(last) : -1;
+        if (got != l[last]) {
+            fprintf(stderr, "Uneven lines: drawer %d of %d workers has %d lines (expected %d)\n", last, t, got, l[last]);
+            fail = 1;
+        } else if (memcmp(g_fsaa_ref, g_last_frame, sizeof g_fsaa_ref)) {
+            fprintf(stderr, "Uneven lines, %d workers%s: differ from the game's core\n", t, main_core ? " + main core" : "");
+            fail = 1;
+        } else {
+            printf("  %d workers%s with uneven lines: bit-identical to the game's core\n", t,
+                   main_core ? " + main core" : "");
+        }
     }
     glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
     static const char *const levels[] = { "2", "4" };
@@ -1689,6 +1730,7 @@ static int test_fsaa_auto_post(void) {
 
 /* Video filter: dithered grey 100/150/200 is smoothed (mean close to the
  * true value, much less spread), a hard edge stays. */
+#define VF_REF_HASH 0xe09960f5u
 static int test_voodoo_filter(void) {
     printf("-- Test 20: Voodoo video filter (GLIDULATOR_VOODOO_FILTER) --\n");
     int fail = 0;
@@ -1717,6 +1759,21 @@ static int test_voodoo_filter(void) {
             hi = r > hi ? r : hi;
         }
     double mean = sum / n, sd = sqrt(sq / n - mean * mean);
+    /* bit-exact against the filter as first implemented (86Box order of
+     * passes): FNV-1a over the 32-bit picture */
+    {
+        uint32_t h = 2166136261u;
+        for (int i = 0; i < 320 * 240; i++) {
+            h = (h ^ (g_frame32[i] & 0xff)) * 16777619u;
+            h = (h ^ ((g_frame32[i] >> 8) & 0xff)) * 16777619u;
+            h = (h ^ ((g_frame32[i] >> 16) & 0xff)) * 16777619u;
+        }
+        printf("  filtered picture: hash %08x\n", h);
+        if (h != VF_REF_HASH) {
+            fprintf(stderr, "Video filter: picture differs from the reference (hash %08x)\n", h);
+            fail = 1;
+        }
+    }
     /* Comparison: the same surface without filter (565 widened to 8 bits
      * like the filter does: r5 << 3); the filter must keep the mean */
     unsetenv("GLIDULATOR_VOODOO_FILTER");
@@ -1763,6 +1820,44 @@ static int test_voodoo_filter(void) {
     if (fail) {
         fprintf(stderr, "Test 20 FAILED\n");
         return 1;
+    }
+    /* the filter runs split between the drawers (glide_mt_parallel): same
+     * picture on one core, with one worker + the main core, with all */
+    {
+        static const int tc[3] = { 1, GLIDE_RENDERER_ONE_WORKER, 0 };
+        setenv("GLIDULATOR_VOODOO_FILTER", "1", 1);
+        for (int k = 0; k < 3; k++) {
+            glide_renderer_force(GLIDE_RENDERER_AUTO, tc[k]);
+            if (open_320x240())
+                return 1;
+            grDitherMode(GR_DITHER_4x4);
+            for (int f = 0; f < 4; f++) { /* a few frames: the main core takes lines */
+                grBufferClear(0, 0, 0);
+                quad(40, 40, 160, 200, 100.4f, 150.4f, 200.4f, 0);
+                quad(160, 40, 280, 200, 255, 255, 255, 0);
+                grBufferSwap(1);
+            }
+            uint32_t h = 2166136261u;
+            for (int i = 0; i < 320 * 240; i++) {
+                h = (h ^ (g_frame32[i] & 0xff)) * 16777619u;
+                h = (h ^ ((g_frame32[i] >> 8) & 0xff)) * 16777619u;
+                h = (h ^ ((g_frame32[i] >> 16) & 0xff)) * 16777619u;
+            }
+            int nw = glide_mt_workers();
+            printf("  %d workers%s: hash %08x\n", nw, nw && nw < GLIDE_MT_MAX && glide_mt_lines(nw) ? " + main core" : "", h);
+            if (h != VF_REF_HASH) {
+                fprintf(stderr, "Video filter with %d workers differs\n", glide_mt_workers());
+                fail = 1;
+            }
+        }
+        glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
+        unsetenv("GLIDULATOR_VOODOO_FILTER");
+        if (open_320x240())
+            return 1;
+        if (fail) {
+            fprintf(stderr, "Test 20 FAILED\n");
+            return 1;
+        }
     }
     printf("  ok: dither pattern smoothed, edge kept\n");
     return 0;
@@ -2197,6 +2292,156 @@ static int test_lod_dither(void) {
     return 0;
 }
 
+/* Two TMUs (GLIDULATOR_TMUS=2, test 26). variant 0: TMU0 base texture
+ * times TMU1 "lightmap" in one pass (TMU1 gets TMU0's S/T, Glide's
+ * default); 1: the same with GR_STWHINT_ST_DIFF_TMU1 and TMU1 coordinates
+ * shifted by half the texture; 2: trilinear across both TMUs, even levels
+ * on TMU0 and odd levels on TMU1 (odd/even split download and layout).
+ * Frame copy to out. */
+static int two_tmu_scene(int kind, int threads, int variant, uint16_t *out) {
+    static uint16_t base[32 * 32], light[32 * 32], chain[32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1];
+    setenv("GLIDULATOR_TMUS", "2", 1);
+    glide_renderer_force(kind, threads);
+    if (open_320x240())
+        return 1;
+    grDitherMode(GR_DITHER_DISABLE);
+    grBufferClear(0, 0, 0);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE,
+                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    GrTexInfo info;
+    info.aspectRatio = GR_ASPECT_1x1;
+    info.format      = GR_TEXFMT_RGB_565;
+    GrVertex v[4];
+    if (variant < 2) {
+        for (int y = 0; y < 32; y++)
+            for (int x = 0; x < 32; x++) {
+                base[y * 32 + x]  = ((x / 8 + y / 8) & 1) ? BLUE : WHITE;
+                light[y * 32 + x] = x < 16 ? 0x7bef : 0x39e7;
+            }
+        info.smallLod = info.largeLod = GR_LOD_32;
+        info.data                     = base;
+        grTexDownloadMipMap(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+        grTexSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+        info.data = light;
+        grTexDownloadMipMap(GR_TMU1, 4096, GR_MIPMAPLEVELMASK_BOTH, &info);
+        grTexSource(GR_TMU1, 4096, GR_MIPMAPLEVELMASK_BOTH, &info);
+        for (int t = 0; t < 2; t++)
+            grTexFilterMode(t, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+        grTexCombineFunction(GR_TMU1, GR_TEXTURECOMBINE_DECAL);
+        grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_MULTIPLY);
+        grHints(GR_HINT_STWHINT, variant == 1 ? GR_STWHINT_ST_DIFF_TMU1 : 0);
+        v[0] = vtx(40, 40, 255, 255, 255, 255, 0, 1, 0, 0);
+        v[1] = vtx(200, 40, 255, 255, 255, 255, 0, 1, 256, 0);
+        v[2] = vtx(200, 200, 255, 255, 255, 255, 0, 1, 256, 256);
+        v[3] = vtx(40, 200, 255, 255, 255, 255, 0, 1, 0, 256);
+        for (int k = 0; k < 4; k++) {
+            v[k].tmuvtx[1]     = v[k].tmuvtx[0];
+            v[k].tmuvtx[1].sow = v[k].tmuvtx[0].sow + 128.0f;
+        }
+    } else {
+        /* levels 32..1 alternately red and blue */
+        size_t off = 0;
+        for (int lv = 0, n = 32; n >= 1; lv++, n /= 2) {
+            for (int i = 0; i < n * n; i++)
+                chain[off + (size_t) i] = (lv & 1) ? 0x001f : 0xf800;
+            off += (size_t) n * (size_t) n;
+        }
+        info.largeLod = GR_LOD_32;
+        info.smallLod = GR_LOD_1;
+        info.data     = chain;
+        grTexDownloadMipMap(GR_TMU0, 0, GR_MIPMAPLEVELMASK_EVEN, &info);
+        grTexSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_EVEN, &info);
+        grTexDownloadMipMap(GR_TMU1, 0, GR_MIPMAPLEVELMASK_ODD, &info);
+        grTexSource(GR_TMU1, 0, GR_MIPMAPLEVELMASK_ODD, &info);
+        for (int t = 0; t < 2; t++) {
+            grTexFilterMode(t, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+            grTexMipMapMode(t, GR_MIPMAP_NEAREST, FXTRUE);
+        }
+        /* as in 3dfx's examples: the upstream TMU passes its texel, TMU0
+         * (even levels) blends towards it by the LOD fraction */
+        grTexCombineFunction(GR_TMU1, GR_TEXTURECOMBINE_DECAL);
+        grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_TRILINEAR_EVEN);
+        grHints(GR_HINT_STWHINT, 0);
+        /* 32 texels over 22 pixels: LOD ~0.54, between level 0 and 1 */
+        v[0] = vtx(100, 100, 255, 255, 255, 255, 0, 1, 0, 0);
+        v[1] = vtx(122, 100, 255, 255, 255, 255, 0, 1, 256, 0);
+        v[2] = vtx(122, 122, 255, 255, 255, 255, 0, 1, 256, 256);
+        v[3] = vtx(100, 122, 255, 255, 255, 255, 0, 1, 0, 256);
+    }
+    grDrawPolygonVertexList(4, v);
+    grBufferSwap(0);
+    grHints(GR_HINT_STWHINT, 0);
+    memcpy(out, g_last_frame, (size_t) W * H * 2);
+    return 0;
+}
+
+/* |channel difference| <= 1 for each of R, G, B */
+static int close565(uint16_t a, uint16_t b) {
+    int dr = (a >> 11) - (b >> 11), dg = ((a >> 5) & 63) - ((b >> 5) & 63), db = (a & 31) - (b & 31);
+    return dr >= -1 && dr <= 1 && dg >= -1 && dg <= 1 && db >= -1 && db <= 1;
+}
+
+static int test_two_tmus(void) {
+    printf("-- Test 26: two TMUs (GLIDULATOR_TMUS=2) --\n");
+    static uint16_t ref[3][W * H], img[W * H];
+    int             fail = 0;
+    GrHwConfiguration hw;
+    setenv("GLIDULATOR_TMUS", "2", 1);
+    grSstQueryHardware(&hw);
+    if (hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx != 2) {
+        fprintf(stderr, "nTexelfx %d instead of 2\n", hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx);
+        fail = 1;
+    }
+    for (int var = 0; var < 3; var++)
+        if (two_tmu_scene(GLIDE_RENDERER_C, 1, var, ref[var]))
+            return 1;
+    /* white x grey 0x7bef ~ 0x7bef, blue x 0x39e7 ~ (0,0,7); with
+     * ST_DIFF_TMU1 the left part samples the darker right half */
+    uint16_t a = ref[0][50 * W + 50], b = ref[0][50 * W + 190], c = ref[1][50 * W + 50];
+    if (!close565(a, 0x7bef) || !close565(b, 0x0007) || !close565(c, 0x39e7)) {
+        fprintf(stderr, "TMU0 x TMU1: %04x %04x %04x (expected ~7bef, ~0007, ~39e7)\n", a, b, c);
+        fail = 1;
+    }
+    uint16_t t = ref[2][110 * W + 110];
+    int      r = t >> 11, bl = t & 31;
+    /* LOD ~0.54: ~46 % red (level 0, TMU0) + ~54 % blue (level 1, TMU1) */
+    if (r < 10 || r > 18 || bl < 13 || bl > 21 || r + bl < 29 || r + bl > 32) {
+        fprintf(stderr, "trilinear across the TMUs: %04x, expected ~46 %% red + ~54 %% blue\n", t);
+        fail = 1;
+    }
+    printf("  TMU0 x TMU1 %04x %04x, ST_DIFF_TMU1 %04x, trilinear %04x\n", a, b, c, t);
+    /* JIT and workers draw the same */
+    static const int threads[3] = { 1, GLIDE_RENDERER_ONE_WORKER, 4 };
+    for (int var = 0; var < 3; var++)
+        for (int k = 0; k < 3; k++) {
+            if (!glide_renderer_available(GLIDE_RENDERER_JIT) && k == 0)
+                continue;
+            int kind = glide_renderer_available(GLIDE_RENDERER_JIT) ? GLIDE_RENDERER_JIT : GLIDE_RENDERER_C;
+            if (two_tmu_scene(kind, threads[k], var, img))
+                return 1;
+            if (memcmp(img, ref[var], sizeof img)) {
+                fprintf(stderr, "variant %d: %s with %d threads differs from C\n", var, glide_renderer_name(kind),
+                        threads[k]);
+                fail = 1;
+            }
+        }
+    unsetenv("GLIDULATOR_TMUS");
+    glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
+    grSstQueryHardware(&hw);
+    if (hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx != 1) {
+        fprintf(stderr, "nTexelfx %d without GLIDULATOR_TMUS\n", hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx);
+        fail = 1;
+    }
+    if (open_320x240())
+        return 1;
+    if (fail) {
+        fprintf(stderr, "Test 26 FAILED\n");
+        return 1;
+    }
+    printf("  ok: one-pass multitexture, STW hint, trilinear split, C/JIT/workers identical\n");
+    return 0;
+}
+
 int main(void) {
     printf("glidulator smoke test\n");
     setenv("GLIDULATOR_SPLASH", "off", 1); /* the logo is on by default; only test 22 plays it */
@@ -2219,7 +2464,7 @@ int main(void) {
     if (test_demo_triangles() || test_demo_triangles_mipmap())
         return 1;
     if (test_lfb() || test_sst() || test_gutex() || test_fog_ncc() || test_gu_presets() || test_clip() || test_renderer() || test_output_osd() || test_fsaa() || test_fsaa_auto_post() || test_voodoo_filter() ||
-        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither())
+        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither() || test_two_tmus())
         return 1;
 
     grGlideShutdown();

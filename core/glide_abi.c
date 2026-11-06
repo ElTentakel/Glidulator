@@ -52,9 +52,9 @@ static GrErrorCallbackFnc_t g_error_callback = 0;
  * computes &texture_cache[0][tex_entry[0]].data[texture_offset[c]]
  * unconditionally for all LOD levels, and voodoo_use_texture() increments
  * texture_last_removed before its first comparison, so even the first
- * upload lands in slot 1. All TEX_CACHE_MAX slots of TMU0 are allocated as
- * 86Box's voodoo_init() does; TMU1 is unused (no dual TMUs) but needs slot 0
- * for the same pointer arithmetic. A slot holds exactly the mip chain laid
+ * upload lands in slot 1. All TEX_CACHE_MAX slots of every emulated TMU are
+ * allocated as 86Box's voodoo_init() does; an unused TMU1 (one TMU) still
+ * needs slot 0 for the same pointer arithmetic. A slot holds exactly the mip chain laid
  * out by texture_offset[] (its last entry is the end); 86Box reserves a
  * second, never used 256x256 area, which cost 8.4 MB over all slots: too
  * much for Pyl under its DOS/4GW 1.97 (fatal error CH_C3DFX[80] when
@@ -143,7 +143,10 @@ static int board_parse(const char *s) {
 /* GLIDULATOR_BOARD: voodoo (default) | rush. Some Voodoo Rush patches
  * (Tomb Raider's TUMBRUSH.EXE) quit silently unless grSstQueryHardware()
  * reports GR_SSTTYPE_SST96; reporting it for every game is riskier, so it
- * is opt-in. Values as for the Voodoo Graphics board (4 MB, 1 TMU, 2 MB). */
+ * is opt-in. Values as for the Voodoo Graphics board (4 MB, 1 TMU, 2 MB).
+ * GLIDULATOR_TMUS=2: the Voodoo Graphics board with two TMUs (2 MB each),
+ * as boards like Obsidian's 100SB had; games then texture in one pass with
+ * both units (e.g. lightmaps) instead of two. */
 static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
     char cfg[16];
     memset(hwconfig, 0, sizeof(*hwconfig));
@@ -159,10 +162,12 @@ static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
     hwconfig->SSTs[0].type                              = GR_SSTTYPE_VOODOO;
     hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam        = 4; /* MB, like a 4 MB Voodoo Graphics board */
     hwconfig->SSTs[0].sstBoard.VoodooConfig.fbiRev       = 1;
-    hwconfig->SSTs[0].sstBoard.VoodooConfig.nTexelfx     = 1;
+    hwconfig->SSTs[0].sstBoard.VoodooConfig.nTexelfx     = glide_tmus_read_cfg();
     hwconfig->SSTs[0].sstBoard.VoodooConfig.sliDetect    = FXFALSE;
-    hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRev = 1;
-    hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam = 2;
+    for (int t = 0; t < g_num_tmus; t++) {
+        hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[t].tmuRev = 1;
+        hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[t].tmuRam = 2;
+    }
 }
 
 /* Both report one board (see GLIDULATOR_BOARD above): games call
@@ -229,10 +234,11 @@ static void free_voodoo_resources(void) {
     glide_fsaa_close();
     glide_vfilter_close();
     glide_crt_close();
-    platform_free(g_voodoo.tex_mem[0]);
-    for (int c = 0; c < TEX_CACHE_MAX; c++)
-        platform_free(g_voodoo.texture_cache[0][c].data);
-    platform_free(g_voodoo.texture_cache[1][0].data);
+    for (int t = 0; t < 2; t++) {
+        platform_free(g_voodoo.tex_mem[t]);
+        for (int c = 0; c < TEX_CACHE_MAX; c++)
+            platform_free(g_voodoo.texture_cache[t][c].data);
+    }
 }
 
 /* Glide state right after grSstWinOpen (also restored after the start-up
@@ -325,6 +331,7 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     }
 
     memset(&g_voodoo, 0, sizeof(g_voodoo));
+    glide_tmus_read_cfg();
     g_voodoo.type   = VOODOO_1;
     g_voodoo.v_disp = height;
 
@@ -348,32 +355,34 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
         return win_open_failed("out of memory");
     }
 
-    for (int c = 0; c < TEX_CACHE_MAX; c++) {
-        g_voodoo.texture_cache[0][c].data = (uint32_t *) platform_alloc(TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
-        if (!g_voodoo.texture_cache[0][c].data) {
+    /* TMU1 without dual TMUs: slot 0 only, for the same pointer
+     * arithmetic (see TEX_CACHE_SLOT_WORDS) */
+    for (int t = 0; t < 2; t++) {
+        int slots = (t < g_num_tmus) ? TEX_CACHE_MAX : 1;
+        for (int c = 0; c < slots; c++) {
+            g_voodoo.texture_cache[t][c].data = (uint32_t *) platform_alloc(TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
+            if (!g_voodoo.texture_cache[t][c].data) {
+                free_voodoo_resources();
+                return win_open_failed("out of memory");
+            }
+            memset(g_voodoo.texture_cache[t][c].data, 0, TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
+            /* base = -1 marks a free slot in 86Box (voodoo_init()); a zero
+             * base would pretend a real texture at address 0. */
+            g_voodoo.texture_cache[t][c].base = (uint32_t) -1;
+        }
+    }
+    for (int t = 0; t < g_num_tmus; t++) {
+        g_voodoo.tex_mem[t] = (uint8_t *) platform_alloc(TEX_MEM_BYTES);
+        if (!g_voodoo.tex_mem[t]) {
             free_voodoo_resources();
             return win_open_failed("out of memory");
         }
-        memset(g_voodoo.texture_cache[0][c].data, 0, TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
+        memset(g_voodoo.tex_mem[t], 0, TEX_MEM_BYTES);
     }
-    g_voodoo.texture_cache[1][0].data = (uint32_t *) platform_alloc(TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
-    if (!g_voodoo.texture_cache[1][0].data) {
-        free_voodoo_resources();
-        return win_open_failed("out of memory");
-    }
-    memset(g_voodoo.texture_cache[1][0].data, 0, TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
-    /* base = -1 marks a free slot in 86Box (voodoo_init()); a zero base would
-     * pretend a real texture at address 0. */
-    for (int c = 0; c < TEX_CACHE_MAX; c++)
-        g_voodoo.texture_cache[0][c].base = (uint32_t) -1;
-    g_voodoo.texture_cache[1][0].base = (uint32_t) -1;
-
-    g_voodoo.tex_mem[0] = (uint8_t *) platform_alloc(TEX_MEM_BYTES);
-    if (!g_voodoo.tex_mem[0]) {
-        free_voodoo_resources();
-        return win_open_failed("out of memory");
-    }
-    memset(g_voodoo.tex_mem[0], 0, TEX_MEM_BYTES);
+    g_voodoo.dual_tmus    = g_num_tmus > 1;
+#ifdef GLIDULATOR_TRACE
+    glide_trace_note("Texture units (GLIDULATOR_TMUS)", (unsigned long) g_num_tmus, 0);
+#endif
     g_voodoo.texture_mask = TEX_MEM_BYTES - 1;
 
     g_lfb_shadow = keep_alloc(&g_keep_shadow, (size_t) width * (size_t) height * 4);
@@ -501,6 +510,7 @@ void GR_EXPORT GLIDE_API grBufferSwap(int swap_interval) {
     }
 #endif
     glide_mt_idle(); /* every triangle of the frame is drawn */
+    glide_mt_frame(); /* balance the workers' scanlines */
     glide_present(vsync); /* vsync, image options, OSD, output (core/osd.c) */
 #ifdef GLIDULATOR_TRACE
     glide_trace_swap();
@@ -686,6 +696,10 @@ void glide_draw_triangle(const GrVertex *in_a, const GrVertex *in_b, const GrVer
         }
     }
 #endif
+    /* The rasterizer samples TMU1 unless TMU0 only passes its own texel
+     * (vid_voodoo_render.c, codegen: TEXTUREMODE_LOCAL) */
+    int tmu1_sampled = g_voodoo.dual_tmus && (params.fbzColorPath & FBZCP_TEXTURE_ENABLED) &&
+                       (params.textureMode[0] & TEXTUREMODE_LOCAL_MASK) != TEXTUREMODE_LOCAL;
     if (params.fbzColorPath & FBZCP_TEXTURE_ENABLED) {
         /* The TMU's W is the vertex oow, unless the hint
          * GR_STWHINT_W_DIFF_TMU0 selects tmuvtx[0].oow. */
@@ -698,6 +712,37 @@ void glide_draw_triangle(const GrVertex *in_a, const GrVertex *in_b, const GrVer
         set64(plane_of(&g, a->tmuvtx[0].tow, b->tmuvtx[0].tow, c->tmuvtx[0].tow, FIX_STW),
               &params.tmu[0].startT, &params.tmu[0].dTdX, &params.tmu[0].dTdY);
         set64(plane_of(&g, wa, wb, wc, FIX_STW), &params.tmu[0].startW, &params.tmu[0].dWdX, &params.tmu[0].dWdY);
+        if (tmu1_sampled) {
+            /* What TMU1 receives in 3dfx's Glide (_grUpdateParamIndex,
+             * _grRebuildDataList): S/T of TMU0 go to all TMUs, oow and
+             * (with W_DIFF_TMU0) TMU0's W as well; TMU1's own S/T only
+             * follow if TMU0 is not in use or the hint ST_DIFF_TMU1 is
+             * set, its own W only with W_DIFF_TMU1. */
+            int use0 = glide_tmu_uses_local(params.textureMode[0]);
+            int use1 = glide_tmu_uses_local(params.textureMode[1]);
+            const GrTmuVertex *sa = &a->tmuvtx[1], *sb = &b->tmuvtx[1], *sc = &c->tmuvtx[1];
+            if (use0 && use1 && !(g_sw.stw_hint & GR_STWHINT_ST_DIFF_TMU1)) {
+                sa = &a->tmuvtx[0];
+                sb = &b->tmuvtx[0];
+                sc = &c->tmuvtx[0];
+            }
+            double w1a = a->oow, w1b = b->oow, w1c = c->oow;
+            if (use1 && (g_sw.stw_hint & GR_STWHINT_W_DIFF_TMU1)) {
+                w1a = a->tmuvtx[1].oow;
+                w1b = b->tmuvtx[1].oow;
+                w1c = c->tmuvtx[1].oow;
+            } else if (use0 && w_own) {
+                w1a = wa;
+                w1b = wb;
+                w1c = wc;
+            }
+            set64(plane_of(&g, sa->sow, sb->sow, sc->sow, FIX_STW), &params.tmu[1].startS, &params.tmu[1].dSdX,
+                  &params.tmu[1].dSdY);
+            set64(plane_of(&g, sa->tow, sb->tow, sc->tow, FIX_STW), &params.tmu[1].startT, &params.tmu[1].dTdX,
+                  &params.tmu[1].dTdY);
+            set64(plane_of(&g, w1a, w1b, w1c, FIX_STW), &params.tmu[1].startW, &params.tmu[1].dWdX,
+                  &params.tmu[1].dWdY);
+        }
     }
 
     params.clipLeft  = g_clip_left;
@@ -725,7 +770,11 @@ void glide_draw_triangle(const GrVertex *in_a, const GrVertex *in_b, const GrVer
      * its end; refcount must rise by the same amount per triangle, or the
      * cache slot counts as in use forever (voodoo_texture_in_use). TMU0
      * without texture is handled above, TMU1 here. */
-    g_voodoo.texture_cache[1][params.tex_entry[1]].refcount++;
+    if (tmu1_sampled) {
+        voodoo_use_texture(&g_voodoo, &params, 1);
+        g_voodoo.params.tex_entry[1] = params.tex_entry[1];
+    } else
+        g_voodoo.texture_cache[1][params.tex_entry[1]].refcount++;
     /* FSAA: voodoo_triangle() runs once per plane and increments refcount_r
      * every time, so refcount rises N times as well. */
     if (g_fsaa_n > 1) {

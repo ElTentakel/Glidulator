@@ -9,14 +9,18 @@
  *
  * File format (little endian):
  *   TEXMEM.BIN  2 MB tex_mem[0], then 256 x uint32 palette
- *   CAPnn.BIN   glide_capture_header, then ncmd x glide_capture_cmd */
+ *   CAPnn.BIN   glide_capture_header, then ncmd x glide_capture_cmd
+ *   TEXnn.BIN, TABnn.BIN  texture memory and tables of TMU0 for CAPnn
+ *   TX1nn.BIN, TB1nn.BIN  the same for TMU1 (two TMUs only)
+ * Version 1 (before TMU1) has CAP_NREGS_V1 registers per command; the
+ * replay still reads it. */
 
 #include "glidulator/glide2x.h"
 
 #include <stdint.h>
 
 #define GLIDE_CAPTURE_MAGIC   0x50414347u /* "GCAP" */
-#define GLIDE_CAPTURE_VERSION 1u
+#define GLIDE_CAPTURE_VERSION 2u
 
 enum {
     GLIDE_CAPTURE_TRIANGLE = 1, /* v[0..2] = vertices in application order */
@@ -29,6 +33,9 @@ enum {
     CAP_TEXTUREMODE, CAP_TLOD, CAP_TEXBASEADDR, CAP_COLOR0, CAP_COLOR1,
     CAP_ZACOLOR, CAP_CHROMAKEY, CAP_CLIP_LEFT, CAP_CLIP_RIGHT, CAP_CLIP_TOP,
     CAP_CLIP_BOTTOM, CAP_STW_HINT,
+    CAP_NREGS_V1,
+    CAP_TEXTUREMODE1 = CAP_NREGS_V1, CAP_TLOD1, CAP_TEXBASEADDR1,
+    CAP_NUM_TMUS, /* g_num_tmus (1 or 2) */
     CAP_NREGS,
     CAP_CLEAR_COLOR = CAP_COLOR0, /* for GLIDE_CAPTURE_CLEAR: ARGB */
     CAP_CLEAR_DEPTH = CAP_COLOR1

@@ -20,6 +20,7 @@ run on real hardware (Core i7-4770T or Core i7-4790, FreeDOS / Windows 98SE).
 | Burnout: Championship Drag Racing (Bethesda, 1998) | game demo | **runs** | Fog, lines, motion blur through the LFB. |
 | Tomb Raider (Core Design, 1996), Voodoo Rush patch `TUMBRUSH.EXE` | game | **runs** (QEMU/KVM, FreeDOS) | Needs `GLIDULATOR_BOARD=rush`, otherwise it quits after the intro videos. Title menu and demo mode tested with the full CD in the drive (LaserLok: DOSBox fails with error 607). |
 | Pył (Optimus Nexus, 1998) | game demo | **runs** (HW) | Start with `PYLDEMO -V1` (3Dfx; the Windows setup program writes the same choice). Needs about 32 MB for itself on top of Glidulator; before 0.9.3 loading a level failed with `CH_C3DFX[80]` (out of memory: its DOS/4GW 1.97 reported the same 20 MB free with 63 and 127 MB of RAM). Real hardware: first level on a Core i7-4770T (no memory manager) and a Core i7-4790 (no memory manager, and HDPMI32i), about 30 fps on the 4790. With EMM386 but without HDPMI32i it crashes on one tester's machine (see Known issues). In QEMU the menu ignores mouse clicks. |
+| The Elder Scrolls Adventures: Redguard (Bethesda, 1998), GOG release, `RGFX.EXE` | game | **runs** (HW) | DOS/4GW: start under HDPMI32i (MS-DOS 7.1 with HIMEM, or FreeDOS with SBEMU). Menus with page turning, intro movies and gameplay; Core i7-4790: about 25 fps in town. Movies: GOG's batch files mount them as drive `R:` (Windows NT syntax); under DOS map the `MOVIES` directory to a free drive with `SUBST` (for example `E:`, within `LASTDRIVE`) and set `animation_drive=E:\` in `SYSTEM.INI`. Sound effects through SBEMU (Sound Blaster 16 in `SOUND\SETSOUND`); the music is CD audio and needs the game CD in a drive. |
 | Archimedean Dynasty (Massive, 1996) | game demo, 3Dfx patch | menus tested | Mission start needs mouse operation, not automated. |
 | Yume 2 (inf, 1998) | demo | not tested | Crashes in DOSBox before the first Glide call (not Glidulator-related). |
 
@@ -27,8 +28,8 @@ run on real hardware (Core i7-4770T or Core i7-4790, FreeDOS / Windows 98SE).
 
 | Title | Type | Status | Notes |
 |---|---|---|---|
-| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. Windows 98 on HW with `GLSMP.VXD`: `timedemo demo1` 38.8 fps on 4 cores (3 workers) against 15.4 fps on one; demo2 37.2, demo3 37.8, FSAA 2x 19.4 fps. |
-| Half-Life 1.1.1.0 (Valve, 1998), OpenGL with the 3Dfx mini driver | game | **runs** (HW) | Start with `-gl`. Windows 98 on HW with `GLSMP.VXD`: the picture froze after one or two minutes ("not responding"); fixed in 0.9.4 (a render worker's triangle was overwritten while it drew it). Tested on an i7-4790: tram ride and four minutes of play, 30-70 fps. |
+| GLQuake 0.97 + 3dfx MiniGL, Quake 1.06 shareware | game | **runs** (HW) | `timedemo demo1`: 62 fps (3 workers, Wine), 31 fps with FSAA 2x. Keep the 3dfx `opengl32.dll` in the game directory. On Windows 98 the picture froze when the first demo started (0.9.0, GLQuake minimizes itself behind its own progress dialog); fixed in 0.9.1. Windows 98 on HW with `GLSMP.VXD`: `timedemo demo1` 38.8 fps on 4 cores (3 workers) against 15.4 fps on one; demo2 37.2, demo3 37.8, FSAA 2x 19.4 fps. With `GLIDULATOR_TMUS=2` the MiniGL offers multitexturing ("Multitexture extensions found") and GLQuake draws walls and lightmaps in one pass: 55 -> 66 fps (QEMU/KVM, four cores), 76.6 -> 93.8 fps on an i7-4790 (Windows 98, `GLSMP.VXD`). |
+| Half-Life 1.1.1.0 (Valve, 1998), OpenGL with the 3Dfx mini driver | game | **runs** (HW) | Start with `-gl`. Windows 98 on HW with `GLSMP.VXD`: the picture froze after one or two minutes ("not responding"); fixed in 0.9.4 (a render worker's triangle was overwritten while it drew it). Tested on an i7-4790: tram ride and four minutes of play, 30-70 fps; also with `GLIDULATOR_TMUS=2`. |
 | Nature95 (Vertigo, 1997) | demo | **runs** (HW) | Windows 98 on HW with `GLSMP.VXD` (multi-core). |
 | Formula 1 (Psygnosis) | game demo | **runs** (HW) | Into the race, cockpit view; Windows 98 on HW with `GLSMP.VXD` (multi-core). |
 | Operation 3DFX '98 (7 entries) | demo contest | **all run** | No Reality, Chrome II (3 parts), Visions, Planet Cornball (3dfx MiniGL), Daggmask, Oblivion, Scenarios. |
@@ -43,9 +44,12 @@ run on real hardware (Core i7-4770T or Core i7-4790, FreeDOS / Windows 98SE).
   Raider's Voodoo Rush patch loads Glide and runs, see above.
 - **Descent and Descent 2 3Dfx patches**: they patch the full versions
   only; the shareware/demo data is not accepted.
-- **Glide 3.x**: games that need `glide3x.dll` are out of scope.
+- **Glide 3.x**: games that need `glide3x.dll` are out of scope for now,
+  for example Need for Speed: Porsche Unleashed (its 3Dfx renderer
+  `Drivers\voodoo2z.dll` loads `glide3x.dll`).
+- **Direct3D games**: Glidulator replaces Glide only.
 
-## Known issues in 0.9.4
+## Known issues in 0.9.5
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
@@ -76,7 +80,14 @@ look at them:
   stays on until the next reboot (the next start reports `already on`).
   Harmless; quit games normally.
 - **`GLIDULATOR_HT=1`** is experimental. On four cores with
-  Hyper-Threading it is slower than the default.
+  Hyper-Threading it is about as fast as the default (up to 0.9.4:
+  slower) and can help in games with much drawing.
+- **More than four render workers** (CPUs with more than four cores) are
+  tested in virtual machines only. Reports from 6- and 8-core machines,
+  also AMD, are welcome: OSD values with `GLIDULATOR_THREADS=4` against
+  `auto`.
+- **`GLIDULATOR_TMUS=2` under DOS** needs about 13 MB more memory; games
+  that leave little free memory may fail to load. It is meant for Windows.
 
 ## Remarks for testers
 
@@ -97,4 +108,7 @@ on and the known issues involving other projects.
   i7-4770T, SBEMU 1.0.0-beta.6 with HDPMI32i) Nature and Dimension run
   with 3 render workers and the JIT; whether sound is audible depends on
   SBEMU and the sound chip's output routing, not on Glidulator. DOS/32A
-  games need `JEMMEX NOVCPI` after SBEMU (SBEMU's documentation).
+  games need `JEMMEX NOVCPI` after SBEMU (SBEMU's documentation). If SBEMU
+  stops with `Sound card IRQ 5 conflict with options /i5`, the sound chip
+  itself uses IRQ 5 (Intel HDA on some boards): start it with `/I7` and set
+  the game's sound setup to IRQ 7.

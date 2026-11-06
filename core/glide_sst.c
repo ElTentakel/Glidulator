@@ -194,11 +194,13 @@ void GR_EXPORT GLIDE_API grGammaCorrectionValue(float value) {
 typedef struct {
     uint32_t       fbzMode, fbzColorPath, alphaMode, fogMode, zaColor, fogColor;
     uint32_t       color0, color1, chromaKey;
-    uint32_t       textureMode, tLOD, texBaseAddr, tformat;
+    uint32_t       textureMode[GLIDE_NUM_TMU], tLOD[GLIDE_NUM_TMU], texBaseAddr[GLIDE_NUM_TMU];
+    uint32_t       tformat[GLIDE_NUM_TMU];
     int            clip_left, clip_right, clip_top, clip_bottom;
     glide_sw_state sw;
-    GrTexInfo      src;
-    int            src_valid;
+    GrTexInfo      src[GLIDE_NUM_TMU];
+    int            src_valid[GLIDE_NUM_TMU];
+    FxU32          src_even_odd[GLIDE_NUM_TMU];
 } glide_saved_state;
 
 /* Fails to compile if the image does not fit into GrState. */
@@ -220,16 +222,18 @@ void GR_EXPORT GLIDE_API grGlideGetState(GrState *state) {
     s.color0       = g_voodoo.params.color0;
     s.color1       = g_voodoo.params.color1;
     s.chromaKey    = g_voodoo.params.chromaKey;
-    s.textureMode  = g_voodoo.params.textureMode[0];
-    s.tLOD         = g_voodoo.params.tLOD[0];
-    s.texBaseAddr  = g_voodoo.params.texBaseAddr[0];
-    s.tformat      = (uint32_t) g_voodoo.params.tformat[0];
+    for (int t = 0; t < GLIDE_NUM_TMU; t++) {
+        s.textureMode[t] = g_voodoo.params.textureMode[t];
+        s.tLOD[t]        = g_voodoo.params.tLOD[t];
+        s.texBaseAddr[t] = g_voodoo.params.texBaseAddr[t];
+        s.tformat[t]     = (uint32_t) g_voodoo.params.tformat[t];
+        glide_tex_get_source(t, &s.src[t], &s.src_valid[t], &s.src_even_odd[t]);
+    }
     s.clip_left    = g_clip_left;
     s.clip_right   = g_clip_right;
     s.clip_top     = g_clip_top;
     s.clip_bottom  = g_clip_bottom;
     s.sw           = g_sw;
-    glide_tex_get_source(&s.src, &s.src_valid);
     memset(state, 0, sizeof *state);
     memcpy(state, &s, sizeof s);
 }
@@ -254,18 +258,22 @@ void GR_EXPORT GLIDE_API grGlideSetState(const GrState *state) {
     g_voodoo.params.chromaKey_r    = (int) ((s.chromaKey >> 16) & 0xff);
     g_voodoo.params.chromaKey_g    = (int) ((s.chromaKey >> 8) & 0xff);
     g_voodoo.params.chromaKey_b    = (int) (s.chromaKey & 0xff);
-    g_voodoo.params.textureMode[0] = s.textureMode;
-    g_voodoo.params.tLOD[0]        = s.tLOD;
-    g_voodoo.params.texBaseAddr[0] = s.texBaseAddr;
-    g_voodoo.params.tformat[0]     = (int) s.tformat;
+    for (int t = 0; t < GLIDE_NUM_TMU; t++) {
+        g_voodoo.params.textureMode[t] = s.textureMode[t];
+        g_voodoo.params.tLOD[t]        = s.tLOD[t];
+        g_voodoo.params.texBaseAddr[t] = s.texBaseAddr[t];
+        g_voodoo.params.tformat[t]     = (int) s.tformat[t];
+    }
     g_clip_left                    = s.clip_left;
     g_clip_right                   = s.clip_right;
     g_clip_top                     = s.clip_top;
     g_clip_bottom                  = s.clip_bottom;
     g_sw                           = s.sw;
-    glide_tex_set_source(&s.src, s.src_valid);
-    if (g_win_open && s.src_valid)
-        voodoo_recalc_tex12(&g_voodoo, 0);
+    for (int t = 0; t < GLIDE_NUM_TMU; t++) {
+        glide_tex_set_source(t, &s.src[t], s.src_valid[t], s.src_even_odd[t]);
+        if (g_win_open && s.src_valid[t] && t < g_num_tmus)
+            voodoo_recalc_tex12(&g_voodoo, t);
+    }
 }
 
 /* --- Statistics --------------------------------------------------- */

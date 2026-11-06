@@ -156,11 +156,16 @@ int vid_select_exact(const vid_mode *modes, int n, int out_w, int out_h, int out
 
 /* RGB565 channels -> 8 bits, already through the gamma table (like the
  * Voodoo: widen 5/6 bits to 8, then the gamma RAMDAC). */
-static uint8_t g_r8[32], g_g8[64], g_b8[32];
-static uint8_t g_lut[256]; /* for 8-bit channels (vid_present32) */
-static int     g_gamma_linear = -1; /* -1: tables not built yet */
+static uint8_t  g_r8[32], g_g8[64], g_b8[32];
+static uint8_t  g_lut[256]; /* for 8-bit channels (vid_present32) */
+static int      g_gamma_linear = -1; /* -1: tables not built yet */
+static unsigned g_gamma_gen;         /* counts changes of g_r8/g_g8/g_b8 */
 
 void vid_set_gamma(const uint8_t lut[256]) {
+    uint8_t old_r[32], old_g[64], old_lut[256];
+    memcpy(old_r, g_r8, sizeof old_r);
+    memcpy(old_g, g_g8, sizeof old_g);
+    memcpy(old_lut, g_lut, sizeof old_lut);
     g_gamma_linear = 1;
     for (int i = 0; i < 256; i++)
         g_lut[i] = lut ? lut[i] : (uint8_t) i;
@@ -176,6 +181,11 @@ void vid_set_gamma(const uint8_t lut[256]) {
         if (g != v6)
             g_gamma_linear = 0;
     }
+    /* games may set the same gamma every frame: only a real change
+     * invalidates the conversion table */
+    if (memcmp(old_r, g_r8, sizeof old_r) || memcmp(old_g, g_g8, sizeof old_g) ||
+        memcmp(old_lut, g_lut, sizeof old_lut))
+        g_gamma_gen++;
 }
 
 static void gamma_init(void) {
@@ -187,6 +197,63 @@ static uint32_t pack(const vid_mode *m, uint16_t p) {
     uint32_t r8 = g_r8[(p >> 11) & 0x1f], g8 = g_g8[(p >> 5) & 0x3f], b8 = g_b8[p & 0x1f];
     return ((r8 >> (8 - m->r_size)) << m->r_pos) | ((g8 >> (8 - m->g_size)) << m->g_pos) |
            ((b8 >> (8 - m->b_size)) << m->b_pos);
+}
+
+/* Every RGB565 value -> target pixel (gamma included), so converting a
+ * pixel is one load instead of three lookups and six variable shifts:
+ * i7-4790, 512x384 -> 800x600x16, Watcom: 2.69 ms per frame with pack()
+ * per pixel. Rebuilt (65536 x pack) when the format or the gamma tables
+ * change. Static, so the portable test links without the platform. */
+static uint32_t g_conv[65536];
+
+typedef struct {
+    int      valid;
+    unsigned gen;
+    uint8_t  f[6];
+} conv_key;
+
+static conv_key g_conv_key;
+
+/* 1 if the table for key k is still valid for mode m and the current
+ * gamma; otherwise k is updated and the caller rebuilds. */
+static int conv_key_ok(conv_key *k, const vid_mode *m) {
+    uint8_t f[6];
+    f[0] = m->r_size;
+    f[1] = m->r_pos;
+    f[2] = m->g_size;
+    f[3] = m->g_pos;
+    f[4] = m->b_size;
+    f[5] = m->b_pos;
+    if (k->valid && k->gen == g_gamma_gen && !memcmp(k->f, f, sizeof f))
+        return 1;
+    k->valid = 1;
+    k->gen   = g_gamma_gen;
+    memcpy(k->f, f, sizeof f);
+    return 0;
+}
+
+static void conv_prepare(const vid_mode *m) {
+    if (conv_key_ok(&g_conv_key, m))
+        return;
+    for (uint32_t p = 0; p < 65536; p++)
+        g_conv[p] = pack(m, (uint16_t) p);
+}
+
+/* Video filter (XRGB8888 in): per 8-bit channel the gamma-corrected value
+ * already shifted into place, so a pixel is three loads and two ORs
+ * instead of three lookups and six variable shifts (2.4 ms per
+ * 512x384 -> 800x600x32 frame on an i7-4790). */
+static uint32_t g_c32[3][256];
+static conv_key g_c32_key;
+
+static void conv32_prepare(const vid_mode *m) {
+    if (conv_key_ok(&g_c32_key, m))
+        return;
+    for (int i = 0; i < 256; i++) {
+        g_c32[0][i] = (uint32_t) (g_lut[i] >> (8 - m->r_size)) << m->r_pos;
+        g_c32[1][i] = (uint32_t) (g_lut[i] >> (8 - m->g_size)) << m->g_pos;
+        g_c32[2][i] = (uint32_t) (g_lut[i] >> (8 - m->b_size)) << m->b_pos;
+    }
 }
 
 /* Mode 13h (further down, needs the options). */
@@ -202,18 +269,19 @@ static void vga_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int 
 static uint8_t g_line[VID_LINE_MAX];
 
 static void convert_line(const vid_mode *m, uint8_t *out, const uint16_t *srow, int rw, uint32_t xstep) {
-    uint32_t sx = 0;
+    uint32_t        sx   = 0;
+    const uint32_t *conv = g_conv;
     if (m->bpp == 15 || m->bpp == 16) {
         uint16_t *o = (uint16_t *) out;
         for (int i = 0; i < rw; i++, sx += xstep)
-            o[i] = (uint16_t) pack(m, srow[sx >> 16]);
+            o[i] = (uint16_t) conv[srow[sx >> 16]];
     } else if (m->bpp == 32) {
         uint32_t *o = (uint32_t *) out;
         for (int i = 0; i < rw; i++, sx += xstep)
-            o[i] = pack(m, srow[sx >> 16]);
+            o[i] = conv[srow[sx >> 16]];
     } else {
         for (int i = 0; i < rw; i++, sx += xstep) {
-            uint32_t v = pack(m, srow[sx >> 16]);
+            uint32_t v = conv[srow[sx >> 16]];
             out[i * 3 + 0] = (uint8_t) v;
             out[i * 3 + 1] = (uint8_t) (v >> 8);
             out[i * 3 + 2] = (uint8_t) (v >> 16);
@@ -235,6 +303,8 @@ void vid_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh,
     int      last  = -1;
     if (bytes > sizeof g_line)
         return; /* wider than any sensible mode */
+    if (!fast)
+        conv_prepare(m);
 
     for (int j = 0; j < rh; j++) {
         int             sy   = (int) ((long) j * h / rh);
@@ -257,16 +327,23 @@ void vid_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh,
 static void convert_line32(const vid_mode *m, uint8_t *out, const uint32_t *srow, int rw, uint32_t xstep) {
     uint32_t sx = 0;
     int      bypp = (m->bpp + 7) / 8;
-    for (int i = 0; i < rw; i++, sx += xstep) {
-        uint32_t q = srow[sx >> 16];
-        uint32_t r = g_lut[(q >> 16) & 0xff], g = g_lut[(q >> 8) & 0xff], b = g_lut[q & 0xff];
-        uint32_t v = ((r >> (8 - m->r_size)) << m->r_pos) | ((g >> (8 - m->g_size)) << m->g_pos) |
-                     ((b >> (8 - m->b_size)) << m->b_pos);
-        if (bypp == 2)
-            ((uint16_t *) out)[i] = (uint16_t) v;
-        else if (bypp == 4)
-            ((uint32_t *) out)[i] = v;
-        else {
+    const uint32_t *cr = g_c32[0], *cg = g_c32[1], *cb = g_c32[2];
+    if (bypp == 4) {
+        uint32_t *o = (uint32_t *) out;
+        for (int i = 0; i < rw; i++, sx += xstep) {
+            uint32_t q = srow[sx >> 16];
+            o[i]       = cr[(q >> 16) & 0xff] | cg[(q >> 8) & 0xff] | cb[q & 0xff];
+        }
+    } else if (bypp == 2) {
+        uint16_t *o = (uint16_t *) out;
+        for (int i = 0; i < rw; i++, sx += xstep) {
+            uint32_t q = srow[sx >> 16];
+            o[i]       = (uint16_t) (cr[(q >> 16) & 0xff] | cg[(q >> 8) & 0xff] | cb[q & 0xff]);
+        }
+    } else {
+        for (int i = 0; i < rw; i++, sx += xstep) {
+            uint32_t q = srow[sx >> 16];
+            uint32_t v = cr[(q >> 16) & 0xff] | cg[(q >> 8) & 0xff] | cb[q & 0xff];
             out[i * 3 + 0] = (uint8_t) v;
             out[i * 3 + 1] = (uint8_t) (v >> 8);
             out[i * 3 + 2] = (uint8_t) (v >> 16);
@@ -274,8 +351,8 @@ static void convert_line32(const vid_mode *m, uint8_t *out, const uint32_t *srow
     }
 }
 
-static void vid_blit32(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh, const uint32_t *src, int w,
-                       int h, int src_stride) {
+void vid_blit32(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh, const uint32_t *src, int w,
+                int h, int src_stride) {
     gamma_init();
     if (m->bpp == 8) {
         vga_blit(m, dst, x, y, rw, rh, src, 1, w, h, src_stride);
@@ -287,6 +364,7 @@ static void vid_blit32(const vid_mode *m, uint8_t *dst, int x, int y, int rw, in
     int      last  = -1;
     if (bytes > sizeof g_line)
         return;
+    conv32_prepare(m);
     for (int j = 0; j < rh; j++) {
         int             sy   = (int) ((long) j * h / rh);
         const uint32_t *srow = (const uint32_t *) ((const uint8_t *) src + (size_t) sy * (size_t) src_stride);
@@ -404,12 +482,26 @@ static const uint8_t g_bayer4[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 
 
 #define VGA_W_MAX 2048 /* source and target width */
 static uint16_t g_acc[3][VGA_W_MAX];       /* column sums of the current target row */
+/* RGB565, up to VGA_PACK_ROWS source rows per target row: column sums packed in
+ * one word, red bits 0-9, green 10-19, blue 20-29 (4 * 255 = 1020 fits).
+ * RGB565 expands through two byte tables: r8 depends on the high byte,
+ * b8 on the low one, and g8 = (g << 2 | g >> 4) = 32 * gh + (gh >> 1) +
+ * 4 * gl with gh = bits 3-5 of g (high byte), gl = bits 0-2 (low byte). */
+#define VGA_PACK_ROWS 4
+static uint32_t g_pacc[VGA_W_MAX];
+static uint32_t g_x565_hi[256], g_x565_lo[256];
 static uint16_t g_x0[VGA_W_MAX], g_xn[VGA_W_MAX]; /* source columns per target column */
 static uint8_t  g_thr[16][16];             /* threshold 0..254 of the active matrix */
 static int      g_thr_kind = -1;
 /* per channel value: index part of the level below, and how far (0..255)
  * the value lies towards the next level; the threshold decides */
 static uint8_t g_base[3][256], g_frac[3][256];
+/* Area average without division: (sum + cnt / 2) * g_inv[cnt] >> 23 equals
+ * (sum + cnt / 2) / cnt for every sum <= 255 * cnt + cnt / 2 when cnt <
+ * VGA_INV_MAX (m = ceil(2^23 / cnt), error e = m * cnt - 2^23 < cnt, exact
+ * while sum * e < 2^23, i.e. 256 * cnt^2 < 2^23); larger areas divide. */
+#define VGA_INV_MAX 180
+static uint32_t g_inv[VGA_INV_MAX];
 
 static void vga_tables(int kind) {
     if (kind == g_thr_kind)
@@ -436,6 +528,13 @@ static void vga_tables(int kind) {
             g_frac[c][v] = (uint8_t) f;
         }
     }
+    for (unsigned v = 0; v < 256; v++) {
+        unsigned r = v >> 3, gh = v & 7, gl = v >> 5, b = v & 31;
+        g_x565_hi[v] = (r << 3 | r >> 2) | (32 * gh + (gh >> 1)) << 10;
+        g_x565_lo[v] = (4 * gl) << 10 | (uint32_t) (b << 3 | b >> 2) << 20;
+    }
+    for (unsigned d = 1; d < VGA_INV_MAX; d++)
+        g_inv[d] = ((1u << 23) + d - 1) / d;
     g_thr_kind = kind;
 }
 
@@ -449,6 +548,38 @@ static void vga_span(int i, int rn, int sn, int *a, int *n) {
     }
     *a = s0;
     *n = s1 - s0;
+}
+
+/* Palette index of an area: channel sums over cnt pixels -> average,
+ * gamma, ordered dither against threshold t */
+static uint8_t vga_index(unsigned sr, unsigned sg, unsigned sb, unsigned cnt, unsigned t) {
+    unsigned half = cnt / 2, r, g, b;
+    if (cnt < VGA_INV_MAX) {
+        uint32_t inv = g_inv[cnt];
+        r            = g_lut[((sr + half) * inv) >> 23];
+        g            = g_lut[((sg + half) * inv) >> 23];
+        b            = g_lut[((sb + half) * inv) >> 23];
+    } else {
+        r = g_lut[(sr + half) / cnt];
+        g = g_lut[(sg + half) / cnt];
+        b = g_lut[(sb + half) / cnt];
+    }
+    return (uint8_t) (g_base[0][r] + (g_frac[0][r] > t) * (VID_VGA_G * VID_VGA_B) + g_base[1][g] +
+                      (g_frac[1][g] > t) * VID_VGA_B + g_base[2][b] + (g_frac[2][b] > t));
+}
+
+/* Column sums of RGB565 source rows y0..y0+yn-1 (yn <= VGA_PACK_ROWS)
+ * into g_pacc */
+static void vga_rows_packed(const void *src, int w, int y0, int yn, int src_stride) {
+    for (int k = 0; k < yn; k++) {
+        const uint16_t *p = (const uint16_t *) ((const uint8_t *) src + (size_t) (y0 + k) * (size_t) src_stride);
+        if (!k)
+            for (int c = 0; c < w; c++)
+                g_pacc[c] = g_x565_hi[p[c] >> 8] + g_x565_lo[p[c] & 0xff];
+        else
+            for (int c = 0; c < w; c++)
+                g_pacc[c] += g_x565_hi[p[c] >> 8] + g_x565_lo[p[c] & 0xff];
+    }
 }
 
 static void vga_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh, const void *src, int is32, int w,
@@ -465,6 +596,30 @@ static void vga_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int 
     for (int j = 0; j < rh; j++) {
         int y0, yn;
         vga_span(j, rh, h, &y0, &yn);
+        if (!is32 && yn <= VGA_PACK_ROWS) {
+            vga_rows_packed(src, w, y0, yn, src_stride);
+            const uint8_t *thr = g_thr[(y + j) & 15];
+            for (int i = 0; i < rw; i++) {
+                unsigned sr = 0, sg = 0, sb = 0, a = g_x0[i], n = g_xn[i];
+                if (n * (unsigned) yn <= VGA_PACK_ROWS) { /* whole area fits the 10-bit fields */
+                    uint32_t v = 0;
+                    for (unsigned c = a; c < a + n; c++)
+                        v += g_pacc[c];
+                    sr = v & 1023;
+                    sg = (v >> 10) & 1023;
+                    sb = v >> 20;
+                } else
+                    for (unsigned c = a; c < a + n; c++) {
+                        uint32_t v = g_pacc[c];
+                        sr += v & 1023;
+                        sg += (v >> 10) & 1023;
+                        sb += v >> 20;
+                    }
+                g_line[i] = vga_index(sr, sg, sb, n * (unsigned) yn, thr[(x + i) & 15]);
+            }
+            memcpy(dst + (size_t) (y + j) * (size_t) m->pitch + (size_t) x, g_line, (size_t) rw);
+            continue;
+        }
         memset(g_acc, 0, sizeof g_acc);
         for (int k = 0; k < yn; k++) {
             const uint8_t *row = (const uint8_t *) src + (size_t) (y0 + k) * (size_t) src_stride;
@@ -493,10 +648,7 @@ static void vga_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int 
                 sg += g_acc[1][c];
                 sb += g_acc[2][c];
             }
-            unsigned cnt = n * (unsigned) yn, half = cnt / 2, t = thr[(x + i) & 15];
-            unsigned r = g_lut[(sr + half) / cnt], g = g_lut[(sg + half) / cnt], b = g_lut[(sb + half) / cnt];
-            g_line[i] = (uint8_t) (g_base[0][r] + (g_frac[0][r] > t) * (VID_VGA_G * VID_VGA_B) + g_base[1][g] +
-                                   (g_frac[1][g] > t) * VID_VGA_B + g_base[2][b] + (g_frac[2][b] > t));
+            g_line[i] = vga_index(sr, sg, sb, n * (unsigned) yn, thr[(x + i) & 15]);
         }
         memcpy(dst + (size_t) (y + j) * (size_t) m->pitch + (size_t) x, g_line, (size_t) rw);
     }

@@ -62,7 +62,15 @@ Notable consequences:
   is why games add a "snap bias" to coordinates, and why the `gu*WithClip`
   functions really clip.
 - `grSstQueryHardware` reports a Voodoo Graphics with 2 MB texture memory
-  per TMU, one TMU. Games quit if no board is found.
+  per TMU, one TMU (two with `GLIDULATOR_TMUS=2`). Games quit if no board
+  is found.
+- With two TMUs, TMU1's output is TMU0's "other" input, as on the board.
+  The state functions behave like 3dfx's Glide for both units: textures
+  split into even and odd levels (`GR_MIPMAPLEVELMASK_EVEN/ODD`) are laid
+  out per level parity, `lodBlend` enables trilinear filtering, and TMU1
+  takes TMU0's S/T and W unless the `GR_STWHINT_ST_DIFF_TMU1` /
+  `W_DIFF_TMU1` hints say otherwise. With one TMU, even/odd downloads keep
+  the unsplit layout and `lodBlend` is ignored.
 - Gamma defaults to 1.3, the value of later 3dfx drivers. Configurable via
   `SST_GAMMA`.
 
@@ -99,7 +107,7 @@ Two independent axes, chosen at `grSstWinOpen` (`core/renderer.c`):
 | Axis | Choices |
 |---|---|
 | Pixel pipeline | **C** interpreter (always available), **JIT**: x86 code generated per render-state combination with SSE2 (32-bit builds only) |
-| Threads | 1, or 2-4 render workers |
+| Threads | 1, or 1-8 render workers (the game's core drawing too with up to 7) |
 
 Both paths and all thread counts produce bit-identical frames. This is
 verified on recorded frames of real software (`glide_replay --compare`).
@@ -118,8 +126,23 @@ verified on recorded frames of real software (`glide_replay --compare`).
 ## 5. Multi-core rendering
 
 `core/render_mt.c` keeps a queue of up to 256 prepared triangles. Every
-worker draws every triangle, but only its own scanlines (`y % n == i`, as
-86Box does). The game continues while workers draw. It waits only at
+worker draws every triangle, but only its own scanlines. A table of 840
+entries (divisible by 1 to 8), repeated down the screen, names the owner
+of each line. Every
+worker times its drawing with the time stamp counter; after each frame the
+lines move halfway towards equal drawing times, so a worker that shares a
+core with another gets fewer lines. Equal shares give `y % n == i`, as in
+86Box. The picture does not depend on the split. The game continues while
+workers draw.
+
+With up to seven workers the game's core is a drawer too (at most eight drawers), with its own
+lines. It draws them only when it would otherwise wait: at a
+synchronisation point, when the queue is full, and while it waits for a
+worker. Its share follows a simple model: the game's core needs its own
+game time G plus its drawing, a worker only its drawing, and every drawer
+should finish at the same time. When G alone is longer than the workers'
+drawing, the game's core gets no lines (it joins again from 5 % of the
+lines and leaves below 1.7 %). It waits only at
 synchronisation points:
 - buffer swap
 - buffer clear
@@ -184,7 +207,11 @@ Otherwise rendering stays on one core.
 
 The faulting AP is identified through its stack address.
 
-**Windows NT/Linux**: workers are threads.
+**Windows NT/Linux**: workers are threads. There `GLIDULATOR_THREADS=auto`
+starts at most four: the OS counts every logical CPU, and with a spinning
+worker on each of them any other load preempts one and the frame waits
+for it. Under DOS and with `GLSMP.VXD` the cores belong to Glidulator
+alone, so `auto` uses up to eight.
 
 **Multi-core under Windows 9x** (`platform/win98/vxd/glsmp.asm`, caller
 `platform/win98/platform_win32.c`): Windows 95/98/ME schedule one core and
@@ -251,7 +278,10 @@ separate. `GLIDULATOR_DISPLAY` chooses the screen mode and
 **DOS** (`platform/dos_ovl/video.c`):
 1. VBE 2.0+ with linear framebuffer, 15/16/24/32 bpp. The smallest mode
    that fits wins; at equal size RGB565 (plain copy) is preferred, or
-   32-bit when the video filter is on.
+   32-bit when the video filter is on. Each source line is converted once
+   through a table of all 65536 RGB565 values in the target format, gamma
+   included (rebuilt when the format or the gamma changes), then copied
+   into video memory line by line.
 2. Fallback (or `GLIDULATOR_DISPLAY=vga`): VGA mode 13h, stretched to
    320x200 (4:3 like the monitor). Picking single pixels would sample the
    Voodoo's 4x4 dither irregularly (coarse stripes) and cutting bits loses
@@ -430,7 +460,7 @@ The release build contains neither.
 
 - Static Glide: games that link Glide statically or program the hardware
   directly cannot be redirected.
-- One TMU: there is no second texture unit and no alpha planes.
+- One TMU by default (two with `GLIDULATOR_TMUS=2`); no alpha planes.
 - `grLfbLock` with `GR_ORIGIN_LOWER_LEFT` returns an unflipped pointer.
 - No vsync on Windows yet, and no page flipping on DOS.
 - Under DOSBox, the emulated S3 BIOS shows mode 640x400x32 black. This is

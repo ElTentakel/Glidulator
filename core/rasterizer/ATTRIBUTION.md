@@ -35,9 +35,15 @@ The Voodoo video output filter in `core/vfilter.c` re-implements
 **Changed**:
 - `voodoo_use_texture()` includes a checksum of the selected NCC table in
   the cache key for YIQ formats, as the palette is for P8.
-- Scanline distribution `y % render_threads`, so any worker count works.
+- Scanline distribution through an owner table (`line_owner`, bands of
+  lines, shares by measured speed) instead of `y % render_threads`, so any
+  worker count works; a drawer without lines in a triangle returns from
+  `voodoo_triangle()` before the setup (`line_count` prefix counts).
 - The texture cache waits for workers instead of failing when full.
 - Per-pixel statistics counters removed (`VOODOO_STAT`).
+- `(1 << 48) / W` and its `fastlog` cached for the last W in the state
+  (`w_reciprocal()`), used by `voodoo_tmu_fetch()` and `vj_persp_fetch()`:
+  with two TMUs sharing W, one division per pixel instead of two.
 - Logging and timers mapped to Glidulator (`voodoo_compat.h`); 86Box
   thread/event types are placeholder typedefs.
 

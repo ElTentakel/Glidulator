@@ -59,17 +59,17 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.4
-  - Fixed: games could freeze after a minute or two on several cores
-    (Half-Life; DOS and Windows 9x).
-  - Write-combining on machines with much RAM (DOS and Windows 98):
-    much faster output there (Core i7-4790, 32 GB: GLQuake 37.6 -> 56.3
-    frames per second).
-  - Windows 98 restores the original MTRRs on exit again.
-  - Multi-core after Windows 98's "Restart in MS-DOS mode" also under
-    HDPMI32i, with or without EMM386.
-  - One render worker on two cores (before: everything on one core).
-  - GLIDULATOR_HT=1 (experimental): Hyper-Threading siblings render too.
+NEW IN 0.9.5
+  - Two texture units (GLIDULATOR_TMUS=2, optional): GLQuake and Half-Life
+    draw walls and lightmaps in one pass (GLQuake, Windows 98, Core
+    i7-4790: 76.6 -> 93.8 frames per second). Costs 13 MB more memory.
+  - Faster texturing, same picture: GLQuake 67.7 -> 76.1 frames per second
+    (Windows 98), Nature 104 -> 117 (DOS), Core i7-4790.
+  - The game's core draws too, and the render workers share the lines by
+    measured speed (Nature on two cores: 75 -> 98 frames per second).
+  - Up to eight render workers (before: four), DOS and Windows 9x.
+  - Faster output: DOS colour conversion, Voodoo video filter, FSAA and
+    VGA mode 13h.
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -86,8 +86,9 @@ KNOWN ISSUES
     misbehaves with it, set GLIDULATOR_SMP=off or remove GLSMP.VXD.
   - Windows 98: a game ended through the task list leaves write-combining
     on until the next reboot. Harmless; quit games normally.
-  - GLIDULATOR_HT=1 is experimental; on four cores with Hyper-Threading
-    it is slower than the default.
+  - GLIDULATOR_HT=1 is experimental. On four cores with Hyper-Threading
+    it is now about as fast as the default.
+  - More than four render workers are tested in virtual machines only.
 
 REPORTING PROBLEMS
   Use the Debug variant, reproduce the problem and attach GLIDULAT.LOG

@@ -319,12 +319,103 @@ static void test_gamma(void) {
     CHECK(*(const uint16_t *) dst == 0x8410);
 }
 
+/* Conversion table: every RGB565 value, with a non-linear gamma table,
+ * into 565, 555, 888 and X888 must match the formula (5/6 bits widened to
+ * 8, gamma, top bits of each channel). Mode and gamma change between the
+ * passes, so the table is rebuilt each time. */
+static void test_conv_all(void) {
+    static uint16_t src[65536];
+    static uint8_t  dst[65536 * 4];
+    uint8_t         lut[256];
+    for (int i = 0; i < 256; i++)
+        lut[i] = (uint8_t) ((i * i) / 255); /* dark gamma, not linear */
+    for (int i = 0; i < 65536; i++)
+        src[i] = (uint16_t) i;
+    for (int g = 0; g < 2; g++) {
+        vid_set_gamma(g ? lut : NULL);
+        const vid_mode modes[4] = { M565(256, 256), M555(256, 256), M888(256, 256), MX888(256, 256) };
+        for (int k = 0; k < 4; k++) {
+            const vid_mode *m = &modes[k];
+            vid_blit(m, dst, 0, 0, 256, 256, src, 256, 256, 512);
+            int bad = 0;
+            for (int p = 0; p < 65536 && !bad; p++) {
+                unsigned r5 = (unsigned) p >> 11, g6 = ((unsigned) p >> 5) & 63, b5 = (unsigned) p & 31;
+                unsigned r = r5 << 3 | r5 >> 2, gg = g6 << 2 | g6 >> 4, b = b5 << 3 | b5 >> 2;
+                if (g) {
+                    r  = lut[r];
+                    gg = lut[gg];
+                    b  = lut[b];
+                }
+                uint32_t want = ((r >> (8 - m->r_size)) << m->r_pos) | ((gg >> (8 - m->g_size)) << m->g_pos) |
+                                ((b >> (8 - m->b_size)) << m->b_pos);
+                uint32_t got;
+                if (m->bpp == 24)
+                    got = (uint32_t) dst[p * 3] | (uint32_t) dst[p * 3 + 1] << 8 | (uint32_t) dst[p * 3 + 2] << 16;
+                else if (m->bpp == 32)
+                    got = ((const uint32_t *) dst)[p];
+                else
+                    got = ((const uint16_t *) dst)[p];
+                bad = got != want;
+            }
+            CHECK(!bad);
+        }
+    }
+    vid_set_gamma(NULL);
+}
+
+/* XRGB8888 path (video filter): every value of each channel, with and
+ * without gamma, in all four formats; neighbouring channels carry other
+ * values so a wrong shift or mask shows. */
+static void test_conv32(void) {
+    static uint32_t src[256 * 3];
+    static uint8_t  dst[256 * 3 * 4];
+    uint8_t         lut[256];
+    for (int i = 0; i < 256; i++)
+        lut[i] = (uint8_t) ((i * i) / 255);
+    for (int i = 0; i < 256; i++) {
+        src[i]       = (uint32_t) i << 16 | (uint32_t) (255 - i) << 8 | (uint32_t) (i * 7 & 255);
+        src[256 + i] = (uint32_t) (i * 3 & 255) << 16 | (uint32_t) i << 8 | (uint32_t) (255 - i);
+        src[512 + i] = (uint32_t) (255 - i) << 16 | (uint32_t) (i * 5 & 255) << 8 | (uint32_t) i;
+    }
+    for (int g = 0; g < 2; g++) {
+        vid_set_gamma(g ? lut : NULL);
+        const vid_mode modes[4] = { M565(768, 1), M555(768, 1), M888(768, 1), MX888(768, 1) };
+        for (int k = 0; k < 4; k++) {
+            const vid_mode *m = &modes[k];
+            vid_blit32(m, dst, 0, 0, 768, 1, src, 768, 1, 768 * 4);
+            int bad = 0;
+            for (int p = 0; p < 768 && !bad; p++) {
+                unsigned r = (src[p] >> 16) & 255, gg = (src[p] >> 8) & 255, b = src[p] & 255;
+                if (g) {
+                    r  = lut[r];
+                    gg = lut[gg];
+                    b  = lut[b];
+                }
+                uint32_t want = ((r >> (8 - m->r_size)) << m->r_pos) | ((gg >> (8 - m->g_size)) << m->g_pos) |
+                                ((b >> (8 - m->b_size)) << m->b_pos);
+                uint32_t got;
+                if (m->bpp == 24)
+                    got = (uint32_t) dst[p * 3] | (uint32_t) dst[p * 3 + 1] << 8 | (uint32_t) dst[p * 3 + 2] << 16;
+                else if (m->bpp == 32)
+                    got = ((const uint32_t *) dst)[p];
+                else
+                    got = ((const uint16_t *) dst)[p];
+                bad = got != want;
+            }
+            CHECK(!bad);
+        }
+    }
+    vid_set_gamma(NULL);
+}
+
 int main(void) {
     test_parse();
     test_select();
     test_rect();
     test_blit();
     test_gamma();
+    test_conv_all();
+    test_conv32();
     test_palette();
     test_vga_dither();
     test_options();

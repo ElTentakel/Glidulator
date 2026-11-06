@@ -162,7 +162,18 @@ void glide_renderer_apply(void) {
     int sync  = want_threads == 1 || platform_core_count() < 2;
     if (want_threads == GLIDE_RENDERER_ONE_WORKER)
         want_threads = 1;
-    g_threads = (want_threads <= 0 || want_threads > max) ? max : want_threads;
+    /* auto: under an OS that schedules threads (NT/XP, Linux/Wine) at most
+     * GLIDE_MT_AUTO_THREADS: it counts every logical CPU, and with workers
+     * on all of them any other load preempts one, and the frame waits for
+     * it (i7-6700, 4 cores + HT: 7 workers 13.8 ms mean against 10.2 with
+     * 4). DOS and GLSMP.VXD own their cores: up to GLIDE_MT_MAX. */
+    int def = max;
+    {
+        const char *mode = platform_smp_mode();
+        if (mode && mode[0] == 'T' && def > GLIDE_MT_AUTO_THREADS)
+            def = GLIDE_MT_AUTO_THREADS;
+    }
+    g_threads = want_threads <= 0 ? def : want_threads > max ? max : want_threads;
     if (sync)
         g_threads = 1;
 

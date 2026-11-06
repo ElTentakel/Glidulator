@@ -98,6 +98,10 @@ int vid_select_exact(const vid_mode *modes, int n, int out_w, int out_h, int out
  * the palette (vid_options.vga_dither). */
 void vid_blit(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh,
               const uint16_t *src, int w, int h, int src_stride);
+/* The same for XRGB8888 input (video filter): 8-bit channels through the
+ * gamma table, nearest scaling. */
+void vid_blit32(const vid_mode *m, uint8_t *dst, int x, int y, int rw, int rh,
+                const uint32_t *src, int w, int h, int src_stride);
 
 /* Mode 13h palette: 6 red x 7 green x 6 blue levels, denser in the dark,
  * index = r * 42 + g * 6 + b (0..251, the rest black); 768 bytes of 6-bit

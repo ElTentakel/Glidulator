@@ -128,29 +128,53 @@ void glide_fsaa_draw(voodoo_params_t *params, int worker, int slot) {
 
 /* Per channel: the sum of the N planes divided by N, with an ordered
  * dither threshold d < N. Identical planes give exactly their value (GUI,
- * LFB); mixed edge pixels get the in-between levels as a pattern. */
-static void resolve(uint16_t *dst_all) {
-    const uint16_t *fb = (const uint16_t *) g_voodoo.fb_mem;
+ * LFB); mixed edge pixels get the in-between levels as a pattern.
+ *
+ * All three channels at once in one 32-bit word: green moves to bits
+ * 21-26, red stays at 11-15, blue at 0-4. The sum of 4 planes needs 2 more
+ * bits per channel (blue 0-6, red 11-17, green 21-28), so the fields do
+ * not touch; adding t to every field and shifting right by log2(N) then
+ * leaves (sum + t) >> shift at the original bit positions. Same result as
+ * per channel. */
+#define SPREAD(v) (((v) & 0xf81fu) | (((v) & 0x07e0u) << 16))
+#define T_ALL     (1u | 1u << 11 | 1u << 21)
+
+static void resolve_line(int y, uint16_t *dst_all) {
     static const unsigned char d2[2][2] = { { 0, 1 }, { 1, 0 } };
     static const unsigned char d4[2][2] = { { 0, 2 }, { 3, 1 } };
-    const unsigned char(*d)[2] = g_fsaa_n == 2 ? d2 : d4;
-    int      shift = g_fsaa_n == 2 ? 1 : 2;
-    size_t   step  = g_fsaa_plane_bytes / 2;
-    for (int y = 0; y < g_height; y++) {
-        const uint16_t *src = fb + (size_t) y * (size_t) g_width;
-        uint16_t       *dst = dst_all + (size_t) y * (size_t) g_width;
-        for (int x = 0; x < g_width; x++) {
-            unsigned r = 0, g = 0, b = 0;
-            for (int k = 0; k < g_fsaa_n; k++) {
-                unsigned v = src[x + (size_t) k * step];
-                r += v >> 11;
-                g += (v >> 5) & 0x3f;
-                b += v & 0x1f;
-            }
-            unsigned t = d[y & 1][x & 1];
-            dst[x]     = (uint16_t) ((((r + t) >> shift) << 11) | (((g + t) >> shift) << 5) | ((b + t) >> shift));
+    const uint16_t *src   = (const uint16_t *) g_voodoo.fb_mem + (size_t) y * (size_t) g_width;
+    uint16_t       *dst   = dst_all + (size_t) y * (size_t) g_width;
+    size_t          step  = g_fsaa_plane_bytes / 2;
+    int             w     = g_width;
+    if (g_fsaa_n == 2) {
+        /* t alternates along the line: [0 1] on even lines, [1 0] on odd */
+        uint32_t t0 = d2[y & 1][0] * T_ALL, t1 = d2[y & 1][1] * T_ALL;
+        for (int x = 0; x < w; x++) {
+            uint32_t s = SPREAD((uint32_t) src[x]) + SPREAD((uint32_t) src[x + step]);
+            s          = (s + ((x & 1) ? t1 : t0)) >> 1;
+            dst[x]     = (uint16_t) ((s & 0xf81fu) | ((s >> 16) & 0x07e0u));
+        }
+    } else {
+        const uint16_t *s1 = src + step, *s2 = src + 2 * step, *s3 = src + 3 * step;
+        uint32_t        t0 = d4[y & 1][0] * T_ALL, t1 = d4[y & 1][1] * T_ALL;
+        for (int x = 0; x < w; x++) {
+            uint32_t s = SPREAD((uint32_t) src[x]) + SPREAD((uint32_t) s1[x]) + SPREAD((uint32_t) s2[x]) +
+                         SPREAD((uint32_t) s3[x]);
+            s          = (s + ((x & 1) ? t1 : t0)) >> 2;
+            dst[x]     = (uint16_t) ((s & 0xf81fu) | ((s >> 16) & 0x07e0u));
         }
     }
+}
+
+/* Lines of one drawer (glide_mt_parallel; the lines are independent) */
+static void resolve_job(int drawer, void *arg) {
+    for (int y = 0; y < g_height; y++)
+        if (glide_mt_line_owner(y) == drawer)
+            resolve_line(y, (uint16_t *) arg);
+}
+
+static void resolve(uint16_t *dst_all) {
+    glide_mt_parallel(resolve_job, dst_all);
 }
 
 /* --- AA_POST: edge smoothing after rendering ----------------------- */
@@ -192,41 +216,52 @@ static uint16_t mix(uint16_t c, uint16_t n) {
 /* Every pixel at a depth edge is mixed with its neighbour across the edge
  * (one horizontal and one vertical neighbour at most). Simple and cheap;
  * surfaces and LFB pixels stay exact. */
-static void aa_post(const uint16_t *src, uint16_t *dst) {
+static void aa_post_line(int y, const uint16_t *src, uint16_t *dst) {
     const uint16_t *z = (const uint16_t *) (g_voodoo.fb_mem + g_aux_offset);
     int             w = g_width, h = g_height;
-    for (int y = 0; y < h; y++) {
-        const uint16_t *s  = src + (size_t) y * (size_t) w;
-        uint16_t       *d  = dst + (size_t) y * (size_t) w;
-        const uint16_t *zr = z + (size_t) y * (size_t) w;
-        for (int x = 0; x < w; x++) {
-            size_t   i = (size_t) y * (size_t) w + (size_t) x;
-            uint16_t c = s[x];
-            if (masked(i) || x == 0 || y == 0 || x == w - 1 || y == h - 1) {
-                d[x] = c;
-                continue;
-            }
-            unsigned zc = zr[x];
-            int      nx = 0, ny = 0;
-            unsigned dl = depth_edge(zc, zr[x - 1]) && !masked(i - 1) ? 1u : 0u;
-            unsigned dr = depth_edge(zc, zr[x + 1]) && !masked(i + 1) ? 1u : 0u;
-            unsigned du = depth_edge(zc, zr[x - w]) && !masked(i - (size_t) w) ? 1u : 0u;
-            unsigned dd = depth_edge(zc, zr[x + w]) && !masked(i + (size_t) w) ? 1u : 0u;
-            if (dl)
-                nx = -1;
-            else if (dr)
-                nx = 1;
-            if (du)
-                ny = -w;
-            else if (dd)
-                ny = w;
-            if (nx)
-                c = mix(c, s[x + nx]);
-            if (ny)
-                c = mix(c, s[x + ny]);
+    const uint16_t *s  = src + (size_t) y * (size_t) w;
+    uint16_t       *d  = dst + (size_t) y * (size_t) w;
+    const uint16_t *zr = z + (size_t) y * (size_t) w;
+    for (int x = 0; x < w; x++) {
+        size_t   i = (size_t) y * (size_t) w + (size_t) x;
+        uint16_t c = s[x];
+        if (masked(i) || x == 0 || y == 0 || x == w - 1 || y == h - 1) {
             d[x] = c;
+            continue;
         }
+        unsigned zc = zr[x];
+        int      nx = 0, ny = 0;
+        unsigned dl = depth_edge(zc, zr[x - 1]) && !masked(i - 1) ? 1u : 0u;
+        unsigned dr = depth_edge(zc, zr[x + 1]) && !masked(i + 1) ? 1u : 0u;
+        unsigned du = depth_edge(zc, zr[x - w]) && !masked(i - (size_t) w) ? 1u : 0u;
+        unsigned dd = depth_edge(zc, zr[x + w]) && !masked(i + (size_t) w) ? 1u : 0u;
+        if (dl)
+            nx = -1;
+        else if (dr)
+            nx = 1;
+        if (du)
+            ny = -w;
+        else if (dd)
+            ny = w;
+        if (nx)
+            c = mix(c, s[x + nx]);
+        if (ny)
+            c = mix(c, s[x + ny]);
+        d[x] = c;
     }
+}
+
+/* Reads src lines y-1..y+1, writes only dst line y: lines independent */
+static const uint16_t *g_post_src;
+static void aa_post_job(int drawer, void *arg) {
+    for (int y = 0; y < g_height; y++)
+        if (glide_mt_line_owner(y) == drawer)
+            aa_post_line(y, g_post_src, (uint16_t *) arg);
+}
+
+static void aa_post(const uint16_t *src, uint16_t *dst) {
+    g_post_src = src;
+    glide_mt_parallel(aa_post_job, dst);
 }
 
 const uint16_t *glide_fsaa_output(void) {

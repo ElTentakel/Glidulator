@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200112L /* setenv */
 /*
  * Replay of a frame captured by the debug variant (see
  * core/include/glidulator/capture.h): renders CAPnn.BIN with its texture
@@ -143,6 +144,52 @@ static void apply_regs(const glide_capture_cmd *c, int point) {
     g_voodoo.params.chromaKey_b    = (int) (c->reg[CAP_CHROMAKEY] & 0xff);
     g_sw.stw_hint                  = c->reg[CAP_STW_HINT];
     voodoo_recalc_tex12(&g_voodoo, 0);
+    if (g_voodoo.dual_tmus) {
+        g_voodoo.params.textureMode[1] = c->reg[CAP_TEXTUREMODE1];
+        if (point)
+            g_voodoo.params.textureMode[1] &= ~6u;
+        g_voodoo.params.tLOD[1]        = c->reg[CAP_TLOD1];
+        g_voodoo.params.texBaseAddr[1] = c->reg[CAP_TEXBASEADDR1];
+        g_voodoo.params.tformat[1]     = (c->reg[CAP_TEXTUREMODE1] >> 8) & 0xf;
+        voodoo_recalc_tex12(&g_voodoo, 1);
+    }
+}
+
+/* TEXnn.BIN/TABnn.BIN (tmu 0) or TX1nn.BIN/TB1nn.BIN (tmu 1): texture
+ * memory, palette, NCC tables; fog tables only from TABnn.BIN. 1 = loaded. */
+static int load_frame_tables(const char *dir, const char *nn, int tmu) {
+    char   path[1024];
+    size_t n_t, n_b;
+    snprintf(path, sizeof path, "%s/%s%s.BIN", dir, tmu ? "TX1" : "TEX", nn);
+    uint8_t *t2 = read_all(path, &n_t);
+    snprintf(path, sizeof path, "%s/%s%s.BIN", dir, tmu ? "TB1" : "TAB", nn);
+    glide_capture_tables *tb = read_all(path, &n_b);
+    int ok = t2 && tb && n_t == TEX_MEM_BYTES && n_b == sizeof *tb;
+    if (ok) {
+        memcpy(g_voodoo.tex_mem[tmu], t2, TEX_MEM_BYTES);
+        for (int i = 0; i < 256; i++)
+            g_voodoo.palette[tmu][i].u = tb->palette[i];
+        g_voodoo.palette_dirty[tmu] = 1;
+        for (int t = 0; t < 2; t++)
+            for (int k = 0; k < 4; k++) {
+                g_voodoo.nccTable[tmu][t].y[k] = tb->ncc[t][k];
+                g_voodoo.nccTable[tmu][t].i[k] = tb->ncc[t][4 + k];
+                g_voodoo.nccTable[tmu][t].q[k] = tb->ncc[t][8 + k];
+            }
+        voodoo_update_ncc(&g_voodoo, tmu);
+        if (!tmu) {
+            for (int i = 0; i < 64; i++) {
+                g_voodoo.params.fogTable[i].fog  = tb->fog[i][0];
+                g_voodoo.params.fogTable[i].dfog = tb->fog[i][1];
+            }
+            g_voodoo.params.fogColor.r = (uint8_t) (tb->fog_color >> 16);
+            g_voodoo.params.fogColor.g = (uint8_t) (tb->fog_color >> 8);
+            g_voodoo.params.fogColor.b = (uint8_t) tb->fog_color;
+        }
+    }
+    free(t2);
+    free(tb);
+    return ok;
 }
 
 /* Figures of a triangle: s/t = sow/oow, tow/oow (Glide's 256 space),
@@ -252,10 +299,28 @@ static int diff_triangles(const glide_capture_header *h, const glide_capture_cmd
     return bad ? 2 : 0;
 }
 
+/* ", lines a/b/c" of the workers per 240 (core/render_mt.c), or "" */
+static const char *lines_str(void) {
+    static char buf[64];
+    int         n = glide_mt_workers();
+    if (n < 1 || (n < 2 && !glide_mt_lines(1)))
+        return "";
+    char *p = buf + sprintf(buf, ", lines");
+    for (int i = 0; i < n; i++)
+        p += sprintf(p, "%c%d", i ? '/' : ' ', glide_mt_lines(i));
+    if (n < GLIDE_MT_MAX && glide_mt_lines(n))
+        sprintf(p, " + main %d", glide_mt_lines(n));
+    return buf;
+}
+
 /* Render with path kind (framebuffer reset to start first); reps > 1:
- * repeat and measure the time per run. */
+ * repeat and measure the time per run; reps < 0: repeat -reps times
+ * without output (lets the load balancing of the workers settle). */
 static int run_with(int kind, int threads, const glide_capture_header *h, const glide_capture_cmd *cmds,
                     const uint8_t *start, size_t fb_bytes, int list, int only, int upto, int point, int reps) {
+    int quiet = reps < 0;
+    if (quiet)
+        reps = -reps;
     glide_renderer_force(kind, threads);
     glide_renderer_apply();
     uint64_t best = (uint64_t) -1, sum = 0;
@@ -266,15 +331,16 @@ static int run_with(int kind, int threads, const glide_capture_header *h, const 
         uint64_t t0 = platform_time_us();
         tri         = render_frame(h, cmds, list && r == 0, only, upto, point);
         glide_mt_idle(); /* render workers done (core/render_mt.c) */
+        glide_mt_frame();
         uint64_t dt = platform_time_us() - t0;
         sum += dt;
         if (dt < best)
             best = dt;
     }
-    if (reps > 1)
-        printf("%-4s threads %d: %d runs, mean %.2f ms, best %.2f ms (%.1f fps)\n",
+    if (reps > 1 && !quiet)
+        printf("%-4s threads %d: %d runs, mean %.2f ms, best %.2f ms (%.1f fps)%s\n",
                glide_renderer_name(glide_renderer_active()),
-               glide_renderer_threads(), reps, sum / 1000.0 / reps, best / 1000.0, 1e6 / (double) best);
+               glide_renderer_threads(), reps, sum / 1000.0 / reps, best / 1000.0, 1e6 / (double) best, lines_str());
     return tri;
 }
 
@@ -322,13 +388,34 @@ int main(int argc, char **argv) {
         fprintf(stderr, "capture incomplete in %s\n", argv[1]);
         return 1;
     }
-    const glide_capture_header *h    = (const glide_capture_header *) cap;
-    const glide_capture_cmd    *cmds = (const glide_capture_cmd *) (cap + sizeof *h);
-    if (h->magic != GLIDE_CAPTURE_MAGIC || h->version != GLIDE_CAPTURE_VERSION ||
-        n_cap < sizeof *h + h->ncmd * sizeof(glide_capture_cmd)) {
-        fprintf(stderr, "no valid GCAP v%u\n", GLIDE_CAPTURE_VERSION);
+    const glide_capture_header *h = (const glide_capture_header *) cap;
+    if (h->magic != GLIDE_CAPTURE_MAGIC || (h->version != 1 && h->version != GLIDE_CAPTURE_VERSION)) {
+        fprintf(stderr, "no valid GCAP v1/v%u\n", GLIDE_CAPTURE_VERSION);
         return 1;
     }
+    /* Version 1: CAP_NREGS_V1 registers per command; widened here, the
+     * TMU1 registers stay 0 (one TMU) */
+    size_t nregs = h->version == 1 ? CAP_NREGS_V1 : CAP_NREGS;
+    size_t step  = sizeof(uint32_t) * (1 + nregs) + sizeof(GrVertex) * 3;
+    if (n_cap < sizeof *h + h->ncmd * step) {
+        fprintf(stderr, "capture truncated\n");
+        return 1;
+    }
+    glide_capture_cmd *cmds = calloc(h->ncmd ? h->ncmd : 1, sizeof *cmds);
+    int                tmus = 1;
+    for (uint32_t i = 0; i < h->ncmd; i++) {
+        const uint8_t *src = cap + sizeof *h + i * step;
+        memcpy(&cmds[i].kind, src, sizeof(uint32_t));
+        memcpy(cmds[i].reg, src + sizeof(uint32_t), sizeof(uint32_t) * nregs);
+        memcpy(cmds[i].v, src + sizeof(uint32_t) * (1 + nregs), sizeof cmds[i].v);
+        if (cmds[i].reg[CAP_NUM_TMUS] > 1)
+            tmus = 2;
+    }
+    /* the board reports as many TMUs as the recording had */
+    if (tmus > 1)
+        setenv("GLIDULATOR_TMUS", "2", 1);
+    else
+        unsetenv("GLIDULATOR_TMUS");
 
     grGlideInit();
     if (!grSstWinOpen(0, res_of(h->width, h->height), 0, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1)) {
@@ -342,36 +429,13 @@ int main(int argc, char **argv) {
 
     /* Per-frame TEXnn.BIN/TABnn.BIN (texture memory, palette, NCC and fog
      * tables of the same frame) when present; otherwise the TEXMEM.BIN
-     * written at the first recorded frame. */
+     * written at the first recorded frame. TMU1: TX1nn.BIN/TB1nn.BIN. */
     if (strlen(argv[2]) >= 5 && !strncmp(argv[2], "CAP", 3)) {
-        char   nn[3] = { argv[2][3], argv[2][4], 0 };
-        size_t n_t, n_b;
-        snprintf(path, sizeof path, "%s/TEX%s.BIN", argv[1], nn);
-        uint8_t *t2 = read_all(path, &n_t);
-        snprintf(path, sizeof path, "%s/TAB%s.BIN", argv[1], nn);
-        glide_capture_tables *tb = read_all(path, &n_b);
-        if (t2 && tb && n_t == TEX_MEM_BYTES && n_b == sizeof *tb) {
-            memcpy(g_voodoo.tex_mem[0], t2, TEX_MEM_BYTES);
-            for (int i = 0; i < 256; i++)
-                g_voodoo.palette[0][i].u = tb->palette[i];
-            for (int t = 0; t < 2; t++)
-                for (int k = 0; k < 4; k++) {
-                    g_voodoo.nccTable[0][t].y[k] = tb->ncc[t][k];
-                    g_voodoo.nccTable[0][t].i[k] = tb->ncc[t][4 + k];
-                    g_voodoo.nccTable[0][t].q[k] = tb->ncc[t][8 + k];
-                }
-            voodoo_update_ncc(&g_voodoo, 0);
-            for (int i = 0; i < 64; i++) {
-                g_voodoo.params.fogTable[i].fog  = tb->fog[i][0];
-                g_voodoo.params.fogTable[i].dfog = tb->fog[i][1];
-            }
-            g_voodoo.params.fogColor.r = (uint8_t) (tb->fog_color >> 16);
-            g_voodoo.params.fogColor.g = (uint8_t) (tb->fog_color >> 8);
-            g_voodoo.params.fogColor.b = (uint8_t) tb->fog_color;
+        char nn[3] = { argv[2][3], argv[2][4], 0 };
+        if (load_frame_tables(argv[1], nn, 0))
             printf("texture memory/tables for the frame: TEX%s.BIN, TAB%s.BIN\n", nn, nn);
-        }
-        free(t2);
-        free(tb);
+        if (g_voodoo.dual_tmus && load_frame_tables(argv[1], nn, 1))
+            printf("TMU1: TX1%s.BIN, TB1%s.BIN\n", nn, nn);
     }
 
     /* Starting state of the framebuffer (colour + depth), so every run
@@ -399,8 +463,12 @@ int main(int argc, char **argv) {
                 printf("compare %-4s: not available\n", glide_renderer_name(k));
                 continue;
             }
-            for (int t = 1; t <= glide_renderer_max_threads(); t++) {
-                run_with(k, t, h, cmds, start, fb_bytes, 0, only, upto, point, 1);
+            /* t = 0 stands for one worker (GLIDE_RENDERER_ONE_WORKER) */
+            for (int t = 0; t <= glide_renderer_max_threads(); t++) {
+                int tt = t ? t : GLIDE_RENDERER_ONE_WORKER;
+                /* several frames: compares with the settled, uneven line
+                 * distribution (main core drawing too), not only y % n */
+                run_with(k, tt, h, cmds, start, fb_bytes, 0, only, upto, point, t != 1 ? -8 : 1);
                 const uint16_t *a = (const uint16_t *) ref, *b = (const uint16_t *) g_voodoo.fb_mem;
                 size_t          diff = 0, first = 0;
                 for (size_t p = 0; p < fb_bytes / 2; p++)
@@ -408,12 +476,13 @@ int main(int argc, char **argv) {
                         first = p;
                 if (diff) {
                     size_t px = first % ((size_t) g_aux_offset / 2);
-                    printf("compare %-4s threads %d: %zu differing values, first %s (%zu,%zu)\n",
-                           glide_renderer_name(k), t, diff, first * 2 < g_aux_offset ? "colour" : "depth",
+                    printf("compare %-4s threads %d%s: %zu differing values, first %s (%zu,%zu)\n",
+                           glide_renderer_name(k), t ? t : 1, t ? "" : " (worker)", diff, first * 2 < g_aux_offset ? "colour" : "depth",
                            px % h->width, px / h->width);
                     rc = 2;
                 } else
-                    printf("compare %-4s threads %d: identical\n", glide_renderer_name(k), t);
+                    printf("compare %-4s threads %d%s: identical%s\n", glide_renderer_name(k), t ? t : 1,
+                           t ? "" : " (worker)", lines_str());
             }
         }
         /* render again with the chosen path for the PNG */

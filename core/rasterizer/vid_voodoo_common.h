@@ -32,6 +32,10 @@
  * plus texture memory are too much memory for many DOS setups. Fewer
  * slots only means more frequent re-decoding, never a wrong picture. */
 #define TEX_CACHE_MAX   32
+/* GLIDULATOR: drawers (render workers, or workers + the game's core),
+ * = GLIDE_MT_MAX (core/render_mt.c checks it); per-drawer counters and
+ * JIT code slots */
+#define VOODOO_MAX_DRAWERS 8
 
 enum {
     VOODOO_1 = 0,
@@ -255,7 +259,7 @@ typedef struct texture_t {
     uint32_t   base;
     uint32_t   tLOD;
     ATOMIC_INT refcount;
-    ATOMIC_INT refcount_r[4];
+    ATOMIC_INT refcount_r[VOODOO_MAX_DRAWERS];
     int        is16;
     uint32_t   palette_checksum;
     uint32_t   addr_start[4];
@@ -411,13 +415,22 @@ typedef struct voodoo_t {
 
     int render_threads;
     int odd_even_mask;
+    /* GLIDULATOR: with render_threads > 1, worker line_owner[y % period]
+     * draws scanline y (core/render_mt.c sets it from the measured speed
+     * of the workers). */
+#define VOODOO_LINE_PERIOD 840 /* divisible by 1..8 and by the band size 4 */
+    uint8_t line_owner[VOODOO_LINE_PERIOD];
+    /* GLIDULATOR: line_count[d][k] = lines of drawer d among positions
+     * 0..k-1 of line_owner (k = period: all of its lines). Lets a drawer
+     * skip a triangle without any line of its own before the setup. */
+    uint16_t line_count[VOODOO_MAX_DRAWERS][VOODOO_LINE_PERIOD + 1];
 
-    int pixel_count[4];
-    int texel_count[4];
+    int pixel_count[VOODOO_MAX_DRAWERS];
+    int texel_count[VOODOO_MAX_DRAWERS];
     int tri_count;
     int frame_count;
-    int pixel_count_old[4];
-    int texel_count_old[4];
+    int pixel_count_old[VOODOO_MAX_DRAWERS];
+    int texel_count_old[VOODOO_MAX_DRAWERS];
     int wr_count;
     int rd_count;
     int tex_count;
@@ -760,8 +773,8 @@ typedef struct voodoo_t {
     void *codegen_data;
 
     /* JIT cache state -- per-instance to avoid races between render threads */
-    int jit_last_block[4];
-    uint64_t jit_generation[4];
+    int jit_last_block[VOODOO_MAX_DRAWERS];
+    uint64_t jit_generation[VOODOO_MAX_DRAWERS];
     struct voodoo_set_t *set;
 
     uint32_t launch_pending;

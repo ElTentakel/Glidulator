@@ -45,7 +45,9 @@ The GL-1 would not exist without these projects and the people behind them:
   original driver did, and a register-accurate rasterizer (PCem/86Box,
   see above) draws the triangles. Gamma like the Voodoo RAMDAC, 4x4 dithering
   like the chip.
-- **Multi-core rendering**: up to four render workers, also under plain
+- **Optional second texture unit** (`GLIDULATOR_TMUS=2`), as on some
+  Voodoo Graphics boards: lightmapped games draw two textures in one pass.
+- **Multi-core rendering**: up to eight render workers, also under plain
   DOS and Windows 95/98/ME, where Glidulator starts the additional CPU
   cores itself (under Windows through the small `GLSMP.VXD` next to the
   DLL, loaded only while the game runs).
@@ -80,27 +82,28 @@ The GL-1 would not exist without these projects and the people behind them:
 
 ## Quick start
 
-The current version is **0.9.4, a preview release**: the tested titles
+The current version is **0.9.5, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-094)). Download the
-package `glidulator-0.9.4.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-095)). Download the
+package `glidulator-0.9.5.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.4 (all versions: [CHANGES.md](CHANGES.md)):
+New in 0.9.5 (all versions: [CHANGES.md](CHANGES.md)):
 
-- **Fixed: freeze after a minute or two with several cores** (Half-Life
-  and others, DOS and Windows 9x): a render worker's triangle could be
-  overwritten while it was still drawing it.
-- **Write-combining on machines with much RAM** (DOS and Windows 98):
-  memory above 4 GB no longer uses up the MTRRs the framebuffer needs.
-  Core i7-4790 with 32 GB: GLQuake 37.6 -> 56.3 fps, Nature 26.4 -> 48.7 fps.
-- **Windows 98 restores the original MTRRs on exit** again.
-- **Multi-core after Windows 98's "Restart in MS-DOS mode"** also under
-  HDPMI32i, with or without EMM386.
-- **One render worker on two cores**; before, two-core machines rendered
-  everything on the game's core.
-- **`GLIDULATOR_HT=1`** (experimental): Hyper-Threading siblings render
-  too; helps on two cores with Hyper-Threading.
+- **Two texture units** (`GLIDULATOR_TMUS=2`, optional): a Voodoo Graphics
+  board with two TMUs. GLQuake and Half-Life draw walls and lightmaps in
+  one pass; GLQuake under Windows 98 on a Core i7-4790: 76.6 -> 93.8 fps.
+- **Faster texturing**: the level of detail is no longer recomputed every
+  8 pixels where it cannot change the picture (single mip level, or the
+  finest one for a whole triangle). Same image; Core i7-4790: GLQuake
+  67.7 -> 76.1 fps (Windows 98), Nature 104 -> 117 fps (DOS).
+- **The game's core draws too**, and the workers share the scanlines by
+  measured speed: Nature on two cores 75 -> 98 fps, GLQuake under
+  Windows 98 56.6 -> 68.9 fps.
+- **Up to eight render workers** (before: four) under DOS and Windows 9x.
+- **Faster output**: DOS colour conversion 2.8 -> 0.5 ms per frame, Voodoo
+  video filter 8.0 -> 2.0 ms, FSAA averaging about five times faster, VGA
+  mode 13h faster.
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 
@@ -124,9 +127,9 @@ Tested titles are listed in [docs/compatibility.md](docs/compatibility.md),
 among them:
 
 - **DOS**: Nature, Dimension, Shortcut, Trip, Fucktory, Grand Theft Auto,
-  Burnout.
-- **Windows**: GLQuake (with the original 3dfx MiniGL), Nature95,
-  Formula 1, Operation 3DFX '98.
+  Burnout, The Elder Scrolls Adventures: Redguard, Pył.
+- **Windows**: GLQuake (with the original 3dfx MiniGL), Half-Life,
+  Nature95, Formula 1, Operation 3DFX '98.
 
 Games that link Glide statically instead of loading the OVL/DLL (e.g. the
 3Dfx versions of Tomb Raider and Carmageddon) cannot be supported this way.

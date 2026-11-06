@@ -23,8 +23,12 @@ typedef enum {
 #define GLIDE_RENDERER_AUTO    (-1)
 #define GLIDE_RENDERER_UNKNOWN (-2)
 
-/* Maximum number of render workers (the JIT has code slots per worker index) */
-#define GLIDE_MT_MAX 4
+/* Maximum number of drawers: render workers, or workers + the game's core
+ * (the JIT has code slots per drawer; = VOODOO_MAX_DRAWERS). The platforms
+ * start at most 8 other cores (smp_dos.c AP_MAX, GLSMP.VXD MAX_AP). */
+#define GLIDE_MT_MAX 8
+/* GLIDULATOR_THREADS=auto under OS threads (platform_smp_mode "THREADS") */
+#define GLIDE_MT_AUTO_THREADS 4
 
 /* "c", "jit" */
 const char *glide_renderer_name(int kind);

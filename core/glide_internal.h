@@ -43,12 +43,22 @@ extern void *g_lfb_shadow;
  * it. */
 #define TEX_MEM_BYTES (2 * 1024 * 1024)
 
+/* Texture units the board reports and emulates (GLIDULATOR_TMUS=1|2,
+ * default 1; only on the Voodoo Graphics board, a Rush has one). Read by
+ * glide_tmus_read_cfg() in grSstQueryHardware()/grSstWinOpen(). With two,
+ * TMU1 has its own texture memory, tables and cache slots, and the state
+ * functions follow 3dfx's Glide for both units (odd/even level split,
+ * lodBlend trilinear, STW hints). */
+extern int g_num_tmus;
+int        glide_tmus_read_cfg(void);
+
 /* State that is not a hardware register (software state in 3dfx's driver,
  * too). */
 typedef struct {
     GrColorFormat_t color_format; /* from grSstWinOpen(), for GrColor_t values */
     GrCullMode_t    cull_mode;
-    GrMipMapMode_t  mipmap_mode;
+    GrMipMapMode_t  mipmap_mode[GLIDE_NUM_TMU];
+    FxBool          lod_blend[GLIDE_NUM_TMU]; /* grTexMipMapMode lodBlend (two TMUs only) */
     FxU32           stw_hint; /* grHints(GR_HINT_STWHINT, ...) */
     FxU32           allow_lod_dither; /* grHints(GR_HINT_ALLOW_MIPMAP_DITHER, ...) */
     /* guColorCombineFunction(..._DELTA0): iterated colour held constant at
@@ -86,6 +96,25 @@ void glide_mt_stop(void);
 int  glide_mt_workers(void);
 void glide_mt_submit(const voodoo_params_t *params);
 void glide_mt_idle(void);
+/* After glide_mt_idle() at the end of a frame: redistributes the
+ * scanlines by the measured drawing time of the workers. */
+void glide_mt_frame(void);
+/* Work split by scanlines between the drawers (workers and, while it has
+ * lines, the main core): glide_mt_parallel() calls fn(drawer, arg) once on
+ * every drawer and returns when all are done; fn handles the lines y with
+ * glide_mt_line_owner(y) == drawer. Without workers: fn(0, arg), and every
+ * line belongs to drawer 0. fn must not call Glide or platform functions
+ * (it may run on a core under GLSMP.VXD or a DOS AP). */
+typedef void (*glide_mt_job_fn)(int drawer, void *arg);
+void glide_mt_parallel(glide_mt_job_fn fn, void *arg);
+int  glide_mt_line_owner(int y);
+/* Scanlines per VOODOO_LINE_PERIOD of worker i (0 without workers), of the
+ * main core for i = glide_mt_workers() (0 while it does not draw). Test
+ * hook: glide_mt_test_lines() sets fixed counts for the workers and in
+ * lines[workers] for the main core (0 = off; sum = period) and turns the
+ * balancing off until the next glide_mt_start(). */
+int  glide_mt_lines(int i);
+void glide_mt_test_lines(const int *lines);
 
 /* FSAA (core/fsaa.c): g_fsaa_n active planes (1 = off), g_fsaa_plane_bytes
  * apart in g_voodoo.fb_mem. glide_fsaa_read_cfg() before fb_mem is
@@ -192,12 +221,19 @@ const uint8_t *glide_gamma_lut(void);
 /* grSstOrigin without trace entry (for grSstWinOpen). */
 void glide_set_origin(GrOriginLocation_t origin);
 
-/* Texture last selected with grTexSource (for grGlideGet/SetState);
- * valid = 0: none. glide_tex_set_source() does NOT recompute tLOD and
- * textureMode, they are restored from the register image anyway. */
-void glide_tex_get_source(GrTexInfo *info, int *valid);
+/* Texture last selected with grTexSource on a TMU (for grGlideGet/
+ * SetState); valid = 0: none; even_odd = its GR_MIPMAPLEVELMASK_*.
+ * glide_tex_set_source() does NOT recompute tLOD and textureMode, they are
+ * restored from the register image anyway. */
+void glide_tex_get_source(int tmu, GrTexInfo *info, int *valid, FxU32 *even_odd);
 void glide_tex_read_cfg(void); /* GLIDULATOR_LOD_DITHER, read by grSstWinOpen */
-void glide_tex_set_source(const GrTexInfo *info, int valid);
+void glide_tex_set_source(int tmu, const GrTexInfo *info, int valid, FxU32 even_odd);
+/* grTexCombine changed textureMode[tmu]: with two TMUs, recomputes the
+ * tLOD odd/split bits (3dfx's two-pass trilinear rule) */
+void glide_tex_combine_changed(int tmu);
+/* TMU tmu provides its own texel to the combine chain: its combine unit
+ * uses clocal/alocal (3dfx's tmuMask, which selects the STW parameters) */
+int glide_tmu_uses_local(uint32_t texture_mode);
 
 /* Round to nearest, halves away from zero. Not lrint()/llrint(): Open
  * Watcom's llrint() returns 0 for values beyond 32 bits (e.g. 3.6e10 -> 0),

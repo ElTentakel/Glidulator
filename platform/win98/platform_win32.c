@@ -34,7 +34,9 @@
 #define VXD_JOB_DONE  3
 #define VXD_JOB_FAULT 4
 #define VXD_MAX_AP    8
-#define VXD_MAX_BLOCKS 64
+/* Blocks the workers touch: ~45 with one TMU (32 texture cache slots,
+ * framebuffer, buffers, JIT), ~80 with two (GLIDULATOR_TMUS=2) */
+#define VXD_MAX_BLOCKS 256
 
 static HANDLE g_vxd = INVALID_HANDLE_VALUE;
 static int    g_vxd_state; /* 0 not tried, 1 up, -1 unavailable */

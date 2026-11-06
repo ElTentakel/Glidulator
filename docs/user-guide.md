@@ -71,7 +71,7 @@ and switches the display mode for the duration of the game (see
 Windows 95/98/ME schedule one CPU core only. With `GLSMP.VXD` next to the
 DLL, Glidulator starts the other cores itself and runs its render workers
 there, as under DOS: one worker per physical core (Hyper-Threading siblings
-stay idle), up to four. The VxD is loaded dynamically when the game first
+stay idle), up to eight. The VxD is loaded dynamically when the game first
 uses Glide and unloaded when it ends, also when it is killed; nothing is
 installed and the registry is not touched. Without the file, or with
 `GLIDULATOR_SMP=off`, rendering stays on one core. The Trace log shows
@@ -132,6 +132,7 @@ glidulator_fsaa = 2      anything after the value is ignored
 | Visible bands where textures switch to a smaller mipmap | `GLIDULATOR_LOD_DITHER=1` |
 | The 1997 look | `GLIDULATOR_VOODOO_FILTER=1`, `GLIDULATOR_SPLASH=original` with `GLIDULATOR_SPLASH_FILE`, `GLIDULATOR_CRT=1` |
 | Voodoo Rush version of a game quits after the intro | `GLIDULATOR_BOARD=rush` |
+| Faster lightmapped games (GLQuake, Quake II, Half-Life, Unreal) | `GLIDULATOR_TMUS=2` |
 | Rule out multi-core or JIT problems | `GLIDULATOR_THREADS=1`, `GLIDULATOR_RENDERER=c` |
 | Brighter or darker picture | `SST_GAMMA=1.0` (darker) ... `1.7` (brighter) |
 
@@ -143,11 +144,12 @@ the Windows DLL.
 | Setting | Values | Default | Effect |
 |---|---|---|---|
 | `GLIDULATOR_RENDERER` | `auto`, `c`, `jit` | `auto` | Pixel pipeline. `auto` picks the JIT when the CPU has SSE2 and the system saves SSE registers, otherwise the C path. Both give identical pictures. |
-| `GLIDULATOR_THREADS` | `auto`, `1` ... `4` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 4 (with two cores one worker, which mainly lets the game prepare the next triangles while it draws); `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
+| `GLIDULATOR_THREADS` | `auto`, `1` ... `8` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 8 under DOS and Windows 95/98/ME, at most 4 under Windows NT/2000/XP and Wine (with two cores one worker); the game's core draws part of the lines too while it would otherwise wait; `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
 | `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Under Windows 95/98/ME only `off` matters: it keeps `GLSMP.VXD` unloaded (one core); every other value uses it when present. |
-| `GLIDULATOR_HT` | `0`, `1` | `0` | Experimental, DOS and Windows 95/98/ME (`GLSMP.VXD`): `1` lets Hyper-Threading siblings run render workers too, as if every logical processor were a core of its own. Real cores are still used first, the sibling of the game's core last. Helps on CPUs with 2 cores + HT; with 4 or more cores the default (one worker per physical core) is faster. Windows NT/2000/XP always use every logical processor. |
+| `GLIDULATOR_HT` | `0`, `1` | `0` | Experimental, DOS and Windows 95/98/ME (`GLSMP.VXD`): `1` lets Hyper-Threading siblings run render workers too, as if every logical processor were a core of its own. Real cores are still used first, the sibling of the game's core last. The default (one worker per physical core, the game's core drawing too) is faster with 2 cores + HT; with 4 or more cores `1` is about as fast and can help in games with much drawing (GLQuake under Windows 98, 4 cores + HT: +11 %). Windows NT/2000/XP always use every logical processor. |
 | `GLIDULATOR_VSYNC` | `auto`, `0`, `1` | `auto` | DOS only: wait for vertical retrace before showing a frame. `auto` follows the game's `grBufferSwap` interval, `1` always waits, `0` never. Keeps games that time their logic per frame at the original speed. |
 | `GLIDULATOR_BOARD` | `voodoo`, `rush` | `voodoo` | Which 3dfx board Glidulator reports to the game. `voodoo` = Voodoo Graphics. `rush` = Voodoo Rush, for Rush patches that refuse to run on anything else, such as Tomb Raider's `TUMBRUSH.EXE` (it quits right after the intro videos without a message). Rendering is the same; leave it at `voodoo` for all other games. |
+| `GLIDULATOR_TMUS` | `1`, `2` | `1` | Texture units (TMUs) of the reported Voodoo Graphics board. `2` = a board with two TMUs, as some Voodoo Graphics boards had (2 MB texture memory each). Games that notice it draw two textures in one pass instead of two, for example a wall and its lightmap; that saves about half of their triangles. Also enables trilinear filtering across both units for games that ask for it. Costs 13 MB more memory, so under DOS only for games that leave enough of it free. Ignored with `GLIDULATOR_BOARD=rush` (the Rush has one TMU). |
 | `SST_GAMMA` | number | `1.3` | Output gamma like the Voodoo RAMDAC (the variable name of 3dfx's driver). `1.0` is neutral; higher values are brighter. |
 
 ### Display
@@ -206,7 +208,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.4 (trace)
+Glidulator GL-1 0.9.5 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame

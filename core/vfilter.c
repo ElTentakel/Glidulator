@@ -21,12 +21,14 @@
  * RRGGBB (own threshold, e.g. 180c18). */
 
 #include "glidulator/platform.h"
+#include "glidulator/renderer.h"
 
 #include "glide_internal.h"
 
 static uint8_t (*g_tab)[256][256]; /* [0] red, [1] green, [2] blue */
 static uint32_t *g_out;
-static uint8_t   g_line[2][2048 * 3];
+/* scratch per drawer (glide_mt_parallel: workers + main core <= GLIDE_MT_MAX) */
+static uint8_t   g_line[GLIDE_MT_MAX][2][2048 * 3];
 static int       g_on;
 
 static int hexval(int c) {
@@ -101,34 +103,50 @@ int glide_vfilter_enabled(void) {
     return g_on;
 }
 
-/* One line: a = pixels, b = intermediate result (fil/fil3 in 86Box) */
-static void filter_line(const uint16_t *src, uint32_t *dst, int w) {
-    uint8_t *a = g_line[0], *b = g_line[1];
-    uint8_t(*t)[256][256] = g_tab;
-    for (int x = 0; x < w; x++) {
-        unsigned p   = src[x];
-        a[x * 3]     = (uint8_t) (((p >> 11) & 31) << 3);
-        a[x * 3 + 1] = (uint8_t) (((p >> 5) & 63) << 2);
-        a[x * 3 + 2] = (uint8_t) ((p & 31) << 3);
-        b[x * 3]     = a[x * 3];
-        b[x * 3 + 1] = a[x * 3 + 1];
-        b[x * 3 + 2] = a[x * 3 + 2];
-    }
+/* One channel of one line, the four passes of 86Box's filter (fil/fil3
+ * there): three with the left neighbour, one with the right. a holds the
+ * channel's pixels on entry and the result on exit; b is scratch. As in
+ * 86Box the first pixel keeps its value in the left passes and the last
+ * pixel keeps its value after the second pass. t[pixel][neighbour]. */
+static void filter_channel(uint8_t *a, uint8_t *b, uint8_t (*t)[256], int w) {
+    b[0] = a[0];
     for (int x = 1; x < w; x++)
-        for (int c = 0; c < 3; c++)
-            b[x * 3 + c] = t[c][a[x * 3 + c]][a[(x - 1) * 3 + c]];
+        b[x] = t[a[x]][a[x - 1]];
     for (int x = 1; x < w; x++)
-        for (int c = 0; c < 3; c++)
-            a[x * 3 + c] = t[c][b[x * 3 + c]][b[(x - 1) * 3 + c]];
+        a[x] = t[b[x]][b[x - 1]];
+    uint8_t keep = a[w - 1];
     for (int x = 1; x < w; x++)
-        for (int c = 0; c < 3; c++)
-            b[x * 3 + c] = t[c][a[x * 3 + c]][a[(x - 1) * 3 + c]];
+        b[x] = t[a[x]][a[x - 1]];
     for (int x = 0; x < w - 1; x++)
-        for (int c = 0; c < 3; c++)
-            a[x * 3 + c] = t[c][b[x * 3 + c]][b[(x + 1) * 3 + c]];
-    /* as in 86Box, the last pixel keeps its value after the second pass */
+        a[x] = t[b[x]][b[x + 1]];
+    a[w - 1] = keep;
+}
+
+/* One line. Planar per channel (r, g, b one after another in g_line[0]),
+ * so each pass is a plain loop over one 64 KB table; the interleaved
+ * version with a channel loop inside took 5.4 ms per 512x384 frame on an
+ * i7-4790 (Watcom). Bit-identical to it. */
+static void filter_line(const uint16_t *src, uint32_t *dst, int w, int drawer) {
+    uint8_t *r = g_line[drawer][0], *g = r + 2048, *b = g + 2048, *tmp = g_line[drawer][1];
+    for (int x = 0; x < w; x++) {
+        unsigned p = src[x];
+        r[x]       = (uint8_t) (((p >> 11) & 31) << 3);
+        g[x]       = (uint8_t) (((p >> 5) & 63) << 2);
+        b[x]       = (uint8_t) ((p & 31) << 3);
+    }
+    filter_channel(r, tmp, g_tab[0], w);
+    filter_channel(g, tmp, g_tab[1], w);
+    filter_channel(b, tmp, g_tab[2], w);
     for (int x = 0; x < w; x++)
-        dst[x] = (uint32_t) a[x * 3] << 16 | (uint32_t) a[x * 3 + 1] << 8 | a[x * 3 + 2];
+        dst[x] = (uint32_t) r[x] << 16 | (uint32_t) g[x] << 8 | b[x];
+}
+
+/* Lines of one drawer (glide_mt_parallel; the lines are independent) */
+static void filter_job(int drawer, void *arg) {
+    const uint16_t *fb = (const uint16_t *) arg;
+    for (int y = 0; y < g_height; y++)
+        if (glide_mt_line_owner(y) == drawer)
+            filter_line(fb + (size_t) y * (size_t) g_width, g_out + (size_t) y * (size_t) g_width, g_width, drawer);
 }
 
 void glide_blit_output(const uint16_t *fb) {
@@ -141,8 +159,7 @@ void glide_blit_output_keep(const uint16_t *fb, int kx, int ky, int kw, int kh) 
         platform_blit(fb, g_width, g_height, g_width * 2);
         return;
     }
-    for (int y = 0; y < g_height; y++)
-        filter_line(fb + (size_t) y * (size_t) g_width, g_out + (size_t) y * (size_t) g_width, g_width);
+    glide_mt_parallel(filter_job, (void *) fb);
     for (int y = ky; y < ky + kh && y < g_height; y++)
         for (int x = kx; x < kx + kw && x < g_width; x++) {
             unsigned p = fb[(size_t) y * (size_t) g_width + (size_t) x];

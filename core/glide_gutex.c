@@ -27,15 +27,19 @@
 #define GU_MAX_MIPMAPS 1024
 
 static GrMipMapInfo g_mm[GU_MAX_MIPMAPS];
-static int          g_mm_next;      /* next free id */
-static FxU32        g_mm_free_base; /* next free texture address */
-static GrMipMapId_t g_mm_current = GR_NULL_MIPMAP_HANDLE;
+static int          g_mm_next;                     /* next free id */
+static FxU32        g_mm_free_base[GLIDE_NUM_TMU]; /* next free texture address per TMU */
+static GrMipMapId_t g_mm_current[GLIDE_NUM_TMU];
 
-/* YIQ textures: which id currently occupies NCC table 0/1 and which table
- * is overwritten next. As in 3dfx's code the two tables alternate, so two
- * YIQ textures used in turn need no new table download. */
-static GrMipMapId_t g_ncc_mmid[2];
-static int          g_ncc_next;
+/* YIQ textures: which id currently occupies NCC table 0/1 of a TMU and
+ * which table is overwritten next. As in 3dfx's code the two tables
+ * alternate, so two YIQ textures used in turn need no new table download. */
+static GrMipMapId_t g_ncc_mmid[GLIDE_NUM_TMU][2];
+static int          g_ncc_next[GLIDE_NUM_TMU];
+
+static int gu_tmu_ok(GrChipID_t tmu) {
+    return tmu >= GR_TMU0 && tmu < g_num_tmus;
+}
 
 static GrMipMapInfo *mm_get(GrMipMapId_t id) {
     if (id >= (GrMipMapId_t) g_mm_next || !g_mm[id].valid)
@@ -52,11 +56,13 @@ static FxU32 mm_start_address(const GrMipMapInfo *mm) {
 
 void glide_gutex_reset(void) {
     memset(g_mm, 0, sizeof g_mm);
-    g_mm_next      = 0;
-    g_ncc_mmid[0] = g_ncc_mmid[1] = GR_NULL_MIPMAP_HANDLE;
-    g_ncc_next     = 0;
-    g_mm_free_base = 0;
-    g_mm_current   = GR_NULL_MIPMAP_HANDLE;
+    g_mm_next = 0;
+    for (int t = 0; t < GLIDE_NUM_TMU; t++) {
+        g_ncc_mmid[t][0] = g_ncc_mmid[t][1] = GR_NULL_MIPMAP_HANDLE;
+        g_ncc_next[t]     = 0;
+        g_mm_free_base[t] = 0;
+        g_mm_current[t]   = GR_NULL_MIPMAP_HANDLE;
+    }
 }
 
 void GR_EXPORT GLIDE_API guTexMemReset(void) {
@@ -66,9 +72,9 @@ void GR_EXPORT GLIDE_API guTexMemReset(void) {
 
 FxU32 GR_EXPORT GLIDE_API guTexMemQueryAvail(GrChipID_t tmu) {
     GLIDE_TRACE("guTexMemQueryAvail");
-    if (tmu != GR_TMU0)
+    if (!gu_tmu_ok(tmu))
         return 0;
-    return TEX_MEM_BYTES - g_mm_free_base;
+    return TEX_MEM_BYTES - g_mm_free_base[tmu];
 }
 
 /* LOD bias as in GrMipMapInfo.lod_bias: 4.2 fixed point (bias * 4) as a
@@ -90,10 +96,10 @@ GrMipMapId_t GR_EXPORT GLIDE_API guTexAllocateMemory(GrChipID_t tmu, FxU8 odd_ev
                                                      GrTextureFilterMode_t magfilter_mode, float lod_bias,
                                                      FxBool trilinear) {
     GLIDE_TRACE("guTexAllocateMemory");
-    if (tmu != GR_TMU0 || g_mm_next >= GU_MAX_MIPMAPS)
+    if (!gu_tmu_ok(tmu) || g_mm_next >= GU_MAX_MIPMAPS)
         return GR_NULL_MIPMAP_HANDLE;
     FxU32 bytes = glide_tex_mem_required(smallest_lod, largest_lod, aspect, fmt, odd_even_mask);
-    if (!bytes || g_mm_free_base + bytes > TEX_MEM_BYTES)
+    if (!bytes || g_mm_free_base[tmu] + bytes > TEX_MEM_BYTES)
         return GR_NULL_MIPMAP_HANDLE; /* invalid, or texture memory full */
 
     GrMipMapId_t  id = (GrMipMapId_t) g_mm_next++;
@@ -116,10 +122,10 @@ GrMipMapId_t GR_EXPORT GLIDE_API guTexAllocateMemory(GrChipID_t tmu, FxU8 odd_ev
     mm->tmu              = tmu;
     mm->odd_even_mask    = odd_even_mask;
     mm->trilinear        = trilinear;
-    mm->tmu_base_address = g_mm_free_base - glide_tex_levels_bytes(GR_LOD_256, largest_lod, aspect, fmt);
+    mm->tmu_base_address = g_mm_free_base[tmu] - glide_tex_levels_bytes(GR_LOD_256, largest_lod, aspect, fmt);
     /* The register values tLOD/tTextureMode are only set by guTexSource
      * through grTexSource & co.; they stay 0 here. */
-    g_mm_free_base += bytes;
+    g_mm_free_base[tmu] += bytes;
     return id;
 }
 
@@ -170,7 +176,7 @@ GrMipMapInfo *GR_EXPORT GLIDE_API guTexGetMipMapInfo(GrMipMapId_t mmid) {
 
 GrMipMapId_t GR_EXPORT GLIDE_API guTexGetCurrentMipMap(GrChipID_t tmu) {
     GLIDE_TRACE("guTexGetCurrentMipMap");
-    return tmu == GR_TMU0 ? g_mm_current : GR_NULL_MIPMAP_HANDLE;
+    return gu_tmu_ok(tmu) ? g_mm_current[tmu] : GR_NULL_MIPMAP_HANDLE;
 }
 
 static void mm_texinfo(const GrMipMapInfo *mm, GrTexInfo *info, void *data) {
@@ -197,20 +203,21 @@ void GR_EXPORT GLIDE_API guTexSource(GrMipMapId_t id) {
      * two tables, just switch; otherwise overwrite the one loaded longer
      * ago. */
     if (mm->format == GR_TEXFMT_YIQ_422 || mm->format == GR_TEXFMT_AYIQ_8422) {
-        int t;
-        if (g_ncc_mmid[0] == id)
+        int           t;
+        GrMipMapId_t *ids = g_ncc_mmid[mm->tmu];
+        if (ids[0] == id)
             t = 0;
-        else if (g_ncc_mmid[1] == id)
+        else if (ids[1] == id)
             t = 1;
         else {
-            t = g_ncc_next;
+            t = g_ncc_next[mm->tmu];
             grTexDownloadTable(mm->tmu, t ? GR_TEXTABLE_NCC1 : GR_TEXTABLE_NCC0, &mm->ncc_table);
-            g_ncc_mmid[t] = id;
-            g_ncc_next    = !t;
+            ids[t]               = id;
+            g_ncc_next[mm->tmu] = !t;
         }
         grTexNCCTable(mm->tmu, t ? GR_NCCTABLE_NCC1 : GR_NCCTABLE_NCC0);
     }
-    g_mm_current = id;
+    g_mm_current[mm->tmu] = id;
 }
 
 /* src: all levels from large to small back to back (as for

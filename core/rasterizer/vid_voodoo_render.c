@@ -34,6 +34,7 @@ typedef struct voodoo_state_t {
     struct {
         int64_t base_s, base_t, base_w;
         int     lod;
+        int     lod_at_min; /*GLIDULATOR: every pixel's LOD clamps to lod_min, see voodoo_lod_always_min()*/
     } tmu[2];
     int64_t base_w;
     int     lod;
@@ -82,6 +83,13 @@ typedef struct voodoo_state_t {
     int stipple;
 
     int real_y; /* GLIDULATOR: screen line being drawn, for the LOD dither */
+
+    /* GLIDULATOR: last W -> (1 << 48) / W and fastlog of it. With two TMUs
+     * both usually get the same W (Glide sends TMU0's W to TMU1 unless
+     * GR_STWHINT_W_DIFF_TMU1), so the second texture fetch of a pixel
+     * reuses the 64-bit division; exact, it caches the same result. */
+    int64_t rcp_w, rcp;
+    int     rcp_log, rcp_valid;
 } voodoo_state_t;
 
 /* GLIDULATOR: LOD dither (textureMode bit 4, Glide GR_MIPMAP_NEAREST_DITHER),
@@ -181,6 +189,21 @@ fastlog(uint64_t val)
         frac = (oldval << (8 - exp)) & 0xff;
 
     return (exp << 8) | logtable[frac];
+}
+
+/* GLIDULATOR: _w = (1 << 48) / w and its fastlog, through the one-entry
+ * cache in the state (see voodoo_state_t.rcp_w) */
+static __inline int64_t
+w_reciprocal(voodoo_state_t *state, int64_t w, int *log)
+{
+    if (!state->rcp_valid || state->rcp_w != w) {
+        state->rcp_w     = w;
+        state->rcp       = w ? (int64_t) ((1ULL << 48) / w) : 0;
+        state->rcp_log   = fastlog(state->rcp);
+        state->rcp_valid = 1;
+    }
+    *log = state->rcp_log;
+    return state->rcp;
 }
 
 static inline int
@@ -298,6 +321,120 @@ voodoo_lod_bias(const voodoo_params_t *params, int tmu)
   With trilinear filtering even fractional LOD steps between neighbouring triangles are visible; 8 pixels keep the error below 0.2 mip levels in traces from Unreal and Forsaken.*/
 #define VOODOO_LOD_SPAN_PART_PIXELS 8
 
+#ifndef VOODOO_LOD_BOUND_MIN_PARTS
+#    define VOODOO_LOD_BOUND_MIN_PARTS 16
+#endif
+/*GLIDULATOR: upper bound for the LOD of every pixel of a triangle (perspective-corrected TMU).
+  voodoo_span_part_lod_base() evaluates the squared texel gradient at the texel coordinate (S/W, T/W) of a
+  part's middle. That function is a sum of squares of affine functions of the texel coordinate, so it is
+  convex, and a projective map takes the triangle to a convex region of texel space: its maximum over the
+  triangle lies at a corner. W is linear on screen, so its minimum (largest 1/W, largest log) is at a corner
+  too. The corners are taken with a margin of 2 pixels in x and y (the parameter adjustment and the
+  rasterisation sample slightly off the vertices), the LOD with a margin of 2/256. If even this bound plus the
+  LOD bias and dither does not exceed lod_min, voodoo_tmu_fetch() and the JIT clamp every pixel to lod_min:
+  the per-part LOD is then not needed and *lod gets a value that keeps every pixel at or below lod_min.
+  Bit-identical by construction (all 182 captures checked), also with the x87 at 24-bit precision (rounding
+  allowance below).*/
+static int
+voodoo_lod_always_min(const voodoo_params_t *params, const voodoo_state_t *state, int tmu, int lod_bias, int *lod)
+{
+    const double margin_pixels  = 2.0;
+    const double rounding       = 1.0 / 262144.0;
+    const int    margin_lod     = 2;
+    double       vx[3];
+    double       vy[3];
+    const double dsdx_fixed     = (double) params->tmu[tmu].dSdX;
+    const double dtdx_fixed     = (double) params->tmu[tmu].dTdX;
+    const double dwdx_fixed     = (double) params->tmu[tmu].dWdX;
+    const double dsdy_fixed     = (double) params->tmu[tmu].dSdY;
+    const double dtdy_fixed     = (double) params->tmu[tmu].dTdY;
+    const double dwdy_fixed     = (double) params->tmu[tmu].dWdY;
+    double       gradient_max   = 0.0;
+    double       w_min          = 0.0;
+    int          first          = 1;
+    int          lod_base_max   = 0;
+    int          upper          = 0;
+    int64_t      w_floor;
+    double       area;
+    double       rows;
+
+    vx[0] = 0.0;
+    vy[0] = 0.0;
+    vx[1] = (params->vertexBx - params->vertexAx) / 16.0;
+    vy[1] = (params->vertexBy - params->vertexAy) / 16.0;
+    vx[2] = (params->vertexCx - params->vertexAx) / 16.0;
+    vy[2] = (params->vertexCy - params->vertexAy) / 16.0;
+
+    /*The bound costs about as much as computing the LOD of a few parts: not worth it for small triangles
+      (rows plus area / VOODOO_LOD_SPAN_PART_PIXELS estimates the number of parts).*/
+    area = fabs(vx[1] * vy[2] - vx[2] * vy[1]) / 2.0;
+    rows = fabs(vy[1]) > fabs(vy[2]) ? fabs(vy[1]) : fabs(vy[2]);
+    if (fabs(vy[2] - vy[1]) > rows)
+        rows = fabs(vy[2] - vy[1]);
+    if (rows + area / VOODOO_LOD_SPAN_PART_PIXELS < VOODOO_LOD_BOUND_MIN_PARTS)
+        return 0;
+
+    /*Points 0-2: the corners themselves, a cheap early rejection -- by convexity their values never exceed
+      the bound over the 12 points with margin (3-14), so this rejects only triangles the full bound rejects.*/
+    for (int point = 0; point < 15; point++) {
+        int    v  = (point < 3) ? point : (point - 3) >> 2;
+        int    c  = (point < 3) ? 0 : (point - 3) & 3;
+        double ox = vx[v] + ((point < 3) ? 0.0 : (c & 1) ? margin_pixels : -margin_pixels);
+        double oy = vy[v] + ((point < 3) ? 0.0 : (c & 2) ? margin_pixels : -margin_pixels);
+        double s  = (double) params->tmu[tmu].startS + dsdx_fixed * ox + dsdy_fixed * oy;
+        double t  = (double) params->tmu[tmu].startT + dtdx_fixed * ox + dtdy_fixed * oy;
+        double w  = (double) params->tmu[tmu].startW + dwdx_fixed * ox + dwdy_fixed * oy;
+        double texel_s;
+        double texel_t;
+        double dsdx;
+        double dtdx;
+        double dsdy;
+        double dtdy;
+        double gx;
+        double gy;
+
+        if (!(w >= 1.0))
+            return 0; /*W not positive everywhere: no bound*/
+        texel_s = s * (1.0 / w); /*a bound only: rounding is covered by the margins*/
+        texel_t = t * (1.0 / w);
+        /*|gradient| plus an allowance for rounding in voodoo_span_part_lod_base(): games may set the x87 to
+          24-bit precision, and the subtraction can cancel (relative 2^-18 of both terms, 64x the 24-bit ulp)*/
+        dsdx = (fabs(dsdx_fixed - texel_s * dwdx_fixed) + (fabs(dsdx_fixed) + fabs(texel_s * dwdx_fixed)) * rounding) / VOODOO_STW_FIXED_POINT_ONE;
+        dtdx = (fabs(dtdx_fixed - texel_t * dwdx_fixed) + (fabs(dtdx_fixed) + fabs(texel_t * dwdx_fixed)) * rounding) / VOODOO_STW_FIXED_POINT_ONE;
+        dsdy = (fabs(dsdy_fixed - texel_s * dwdy_fixed) + (fabs(dsdy_fixed) + fabs(texel_s * dwdy_fixed)) * rounding) / VOODOO_STW_FIXED_POINT_ONE;
+        dtdy = (fabs(dtdy_fixed - texel_t * dwdy_fixed) + (fabs(dtdy_fixed) + fabs(texel_t * dwdy_fixed)) * rounding) / VOODOO_STW_FIXED_POINT_ONE;
+        gx   = dsdx * dsdx + dtdx * dtdx;
+        gy   = dsdy * dsdy + dtdy * dtdy;
+        if (gx > gradient_max)
+            gradient_max = gx;
+        if (gy > gradient_max)
+            gradient_max = gy;
+        if (first || w < w_min)
+            w_min = w;
+        first = 0;
+
+        if (point == 2 || point == 14) {
+            if (!(gradient_max < 1e300) || w_min > 9.0e18)
+                return 0;
+            lod_base_max = (gradient_max > 0.0) ? (int) (log2(gradient_max) / 2.0 * 256.0) + margin_lod : -(64 << 8);
+            w_floor      = (int64_t) w_min;
+            upper        = lod_base_max + lod_bias + fastlog((1ULL << 48) / (uint64_t) w_floor) - (W_RECIPROCAL_LOG2_OFFSET << 8);
+            if (params->textureMode[tmu] & TEXTUREMODE_LOD_DITHER)
+                upper += 15 << 4; /*largest LOD_DITHER()*/
+            if (upper > state->lod_min[tmu])
+                return 0;
+            if (point == 2) { /*the full bound starts afresh over the 12 points with margin*/
+                gradient_max = 0.0;
+                first        = 1;
+            }
+        }
+    }
+
+    *lod = lod_base_max + lod_bias;
+    return 1;
+}
+
+
 /*Sets state->tmu[].lod for the span part that starts at the current state position and ends span_part_offset pixels further in drawing direction.*/
 static void
 voodoo_update_span_part_lod(const voodoo_t *voodoo, const voodoo_params_t *params, voodoo_state_t *state, int span_part_offset, const int triangle_lod_base[2], const int lod_bias[2])
@@ -315,6 +452,9 @@ voodoo_update_span_part_lod(const voodoo_t *voodoo, const voodoo_params_t *param
         if (!(params->textureMode[tmu] & TEXTUREMODE_TPERSP_ST))
             continue;
         if (tmu == 1 && !voodoo->dual_tmus)
+            continue;
+        /*GLIDULATOR: with a single mip level the LOD is clamped to it anyway (see lod_per_span_part in voodoo_half_triangle())*/
+        if (state->lod_min[tmu] == state->lod_max[tmu] || state->tmu[tmu].lod_at_min)
             continue;
 
         part_start_s     = tmu ? state->tmu1_s : state->tmu0_s;
@@ -509,21 +649,18 @@ static inline void
 voodoo_tmu_fetch(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *state, int tmu, int x)
 {
     if (params->textureMode[tmu] & 1) {
-        int64_t _w = 0;
+        int     w_reciprocal_log2;
+        int64_t _w;
 
         if (tmu) {
-            if (state->tmu1_w)
-                _w = (int64_t) ((1ULL << 48) / state->tmu1_w);
+            _w           = w_reciprocal(state, state->tmu1_w, &w_reciprocal_log2);
             state->tex_s = (int32_t) (((((state->tmu1_s + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
             state->tex_t = (int32_t) (((((state->tmu1_t + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
         } else {
-            if (state->tmu0_w)
-                _w = (int64_t) ((1ULL << 48) / state->tmu0_w);
+            _w           = w_reciprocal(state, state->tmu0_w, &w_reciprocal_log2);
             state->tex_s = (int32_t) (((((state->tmu0_s + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
             state->tex_t = (int32_t) (((((state->tmu0_t + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
         }
-
-        int w_reciprocal_log2 = fastlog(_w);
 
         state->lod = state->tmu[tmu].lod + (w_reciprocal_log2 - (W_RECIPROCAL_LOG2_OFFSET << 8));
         if (params->textureMode[tmu] & TEXTUREMODE_LOD_DITHER)
@@ -798,15 +935,13 @@ int voodoo_recomp = 0;
 static int VOODOO_JIT_CALL
 vj_persp_fetch(voodoo_state_t *state, int tmu)
 {
-    int64_t _w = 0;
+    int     lg;
     int64_t s  = tmu ? state->tmu1_s : state->tmu0_s;
     int64_t t  = tmu ? state->tmu1_t : state->tmu0_t;
-    int64_t w  = tmu ? state->tmu1_w : state->tmu0_w;
-    if (w)
-        _w = (int64_t) ((1ULL << 48) / w);
+    int64_t _w = w_reciprocal(state, tmu ? state->tmu1_w : state->tmu0_w, &lg);
     state->tex_s = (int32_t) (((((s + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
     state->tex_t = (int32_t) (((((t + (1 << 13)) >> 14) * _w) + (1 << 29)) >> 30);
-    return fastlog(_w) - (W_RECIPROCAL_LOG2_OFFSET << 8);
+    return lg - (W_RECIPROCAL_LOG2_OFFSET << 8);
 }
 
 static int VOODOO_JIT_CALL
@@ -889,7 +1024,12 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
         lod_bias[tmu]          = voodoo_lod_bias(params, tmu);
     }
 
-    lod_per_span_part = (params->fbzColorPath & FBZCP_TEXTURE_ENABLED) && ((params->textureMode[0] & TEXTUREMODE_TPERSP_ST) || (voodoo->dual_tmus && (params->textureMode[1] & TEXTUREMODE_TPERSP_ST)));
+    /*GLIDULATOR: a TMU whose lod_min equals lod_max always ends up at that
+      level (the clamp in voodoo_tmu_fetch() and in the JIT gives lod_min,
+      lod_frac 0), so its part LOD is never needed. Without any such TMU
+      the span is drawn in one part (one JIT call instead of one per 8
+      pixels), bit-identical.*/
+    lod_per_span_part = (params->fbzColorPath & FBZCP_TEXTURE_ENABLED) && (((params->textureMode[0] & TEXTUREMODE_TPERSP_ST) && state->lod_min[0] != state->lod_max[0] && !state->tmu[0].lod_at_min) || (voodoo->dual_tmus && (params->textureMode[1] & TEXTUREMODE_TPERSP_ST) && state->lod_min[1] != state->lod_max[1] && !state->tmu[1].lod_at_min));
 
     if ((params->fbzMode & 1) && (ystart < params->clipLowY)) {
         int dy = params->clipLowY - ystart;
@@ -1000,10 +1140,10 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
             if (((real_y >> 1) & voodoo->odd_even_mask) != odd_even)
                 goto next_line;
         } else if (voodoo->render_threads > 1) {
-            /* GLIDULATOR: y modulo worker count instead of a mask, so 3 workers
-             * work too (core/render_mt.c); 0x7fffffff keeps negative y
-             * unambiguous. */
-            if ((int) ((uint32_t) (real_y & 0x7fffffff) % (uint32_t) voodoo->render_threads) != odd_even)
+            /* GLIDULATOR: owner table instead of a mask, so 3 workers and
+             * uneven shares work too (core/render_mt.c); 0x7fffffff keeps
+             * negative y unambiguous. */
+            if (voodoo->line_owner[(uint32_t) (real_y & 0x7fffffff) % VOODOO_LINE_PERIOD] != odd_even)
                 goto next_line;
         }
 
@@ -1626,9 +1766,57 @@ next_line:
     voodoo->texture_cache[1][params->tex_entry[1]].refcount_r[odd_even]++;
 }
 
+/* GLIDULATOR: lines of drawer d in screen lines a..b (0 <= a <= b), from
+ * the prefix counts of the owner table */
+static int
+voodoo_lines_owned(const voodoo_t *voodoo, int d, int a, int b)
+{
+    const uint16_t *cnt = voodoo->line_count[d];
+    int             qa = a / VOODOO_LINE_PERIOD, qb = (b + 1) / VOODOO_LINE_PERIOD;
+    return (qb - qa) * cnt[VOODOO_LINE_PERIOD] + cnt[(b + 1) % VOODOO_LINE_PERIOD] - cnt[a % VOODOO_LINE_PERIOD];
+}
+
+/* GLIDULATOR: with several drawers, does drawer odd_even own one of the
+ * lines this triangle would draw? The same line range as
+ * voodoo_half_triangle() (rows (vertexAy + 7) >> 4 .. (vertexCy + 7) >> 4,
+ * minus 1, clipped, mirrored with the Y origin bit). 1 when unsure. */
+static int
+voodoo_triangle_has_lines(const voodoo_t *voodoo, const voodoo_params_t *params, int odd_even)
+{
+    int ay = params->vertexAy & 0xffff, cy = params->vertexCy & 0xffff;
+    if (ay & 0x8000)
+        ay -= 0x10000;
+    if (cy & 0x8000)
+        cy -= 0x10000;
+    int ystart = (ay + 7) >> 4, yend = (cy + 7) >> 4;
+    if (params->fbzMode & 1) {
+        if (ystart < params->clipLowY)
+            ystart = params->clipLowY;
+        if (yend >= params->clipHighY)
+            yend = params->clipHighY;
+    }
+    if (ystart >= yend)
+        return 0;
+    int a = ystart, b = yend - 1;
+    if (params->fbzMode & (1 << 17)) {
+        a = (voodoo->v_disp - 1) - (yend - 1);
+        b = (voodoo->v_disp - 1) - ystart;
+    }
+    if (a < 0)
+        return 1; /* negative lines map through & 0x7fffffff: not counted */
+    return voodoo_lines_owned(voodoo, odd_even, a, b) > 0;
+}
+
 void
 voodoo_triangle(voodoo_t *voodoo, voodoo_params_t *params, int odd_even)
 {
+    if (voodoo->render_threads > 1 && !SLI_ENABLED && !voodoo_triangle_has_lines(voodoo, params, odd_even)) {
+        /* nothing to draw here: only what voodoo_half_triangle() does at
+         * its end for the texture cache */
+        voodoo->texture_cache[0][params->tex_entry[0]].refcount_r[odd_even]++;
+        voodoo->texture_cache[1][params->tex_entry[1]].refcount_r[odd_even]++;
+        return;
+    }
     voodoo_state_t state = { 0 };
     int            vertexAy_adjusted;
     int            vertexCy_adjusted;
@@ -1748,6 +1936,14 @@ voodoo_render_log("voodoo_triangle %i %i %i : vA %f, %f  vB %f, %f  vC %f, %f f 
     lodbias = voodoo_lod_bias(params, 1);
 
     state.tmu[1].lod = LOD + lodbias;
+
+    /*GLIDULATOR: per-part LOD only where it can matter (voodoo_lod_always_min())*/
+    if (params->fbzColorPath & FBZCP_TEXTURE_ENABLED) {
+        for (int tmu = 0; tmu < (voodoo->dual_tmus ? 2 : 1); tmu++) {
+            if ((params->textureMode[tmu] & TEXTUREMODE_TPERSP_ST) && state.lod_min[tmu] != state.lod_max[tmu])
+                state.tmu[tmu].lod_at_min = voodoo_lod_always_min(params, &state, tmu, voodoo_lod_bias(params, tmu), &state.tmu[tmu].lod);
+        }
+    }
     state.stipple = params->stipple;
 
     voodoo_half_triangle(voodoo, params, &state, vertexAy_adjusted, vertexCy_adjusted, odd_even);

@@ -164,13 +164,28 @@ void GR_EXPORT GLIDE_API grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgb_fu
                                       GrCombineFunction_t alpha_function, GrCombineFactor_t alpha_factor,
                                       FxBool rgb_invert, FxBool alpha_invert) {
     GLIDE_TRACE("grTexCombine");
-    if (tmu != GR_TMU0)
+    if (tmu < GR_TMU0 || tmu >= g_num_tmus)
         return;
-    uint32_t tm = g_voodoo.params.textureMode[0];
+    uint32_t tm = g_voodoo.params.textureMode[tmu];
     tm &= ~((CMB_MASK << TM_RGB_SHIFT) | (CMB_MASK << TM_ALPHA_SHIFT));
     tm |= combine_bits(rgb_function, rgb_factor, rgb_invert) << TM_RGB_SHIFT;
     tm |= combine_bits(alpha_function, alpha_factor, alpha_invert) << TM_ALPHA_SHIFT;
-    g_voodoo.params.textureMode[0] = tm;
+    g_voodoo.params.textureMode[tmu] = tm;
+    glide_tex_combine_changed(tmu);
+}
+
+/* As 3dfx's grTexCombine sets tmuMask: the unit's own texel is used if a
+ * factor is LOCAL or LOCAL_ALPHA, or the function adds or subtracts the
+ * local colour/alpha (RGB or alpha part). */
+static int combine_uses_local(uint32_t bits) {
+    uint32_t msel = (bits >> 2) & 7u;
+    return msel == GR_COMBINE_FACTOR_LOCAL || msel == GR_COMBINE_FACTOR_LOCAL_ALPHA ||
+           (bits & (CMB_SUB_CLOCAL | CMB_ADD_CLOCAL | CMB_ADD_ALOCAL)) != 0;
+}
+
+int glide_tmu_uses_local(uint32_t texture_mode) {
+    return combine_uses_local((texture_mode >> TM_RGB_SHIFT) & CMB_MASK) ||
+           combine_uses_local((texture_mode >> TM_ALPHA_SHIFT) & CMB_MASK);
 }
 
 /* Glide writes the value into BOTH constant colour registers: color0

@@ -5,6 +5,79 @@
 Newest release first. Known issues of the current release:
 [docs/compatibility.md](docs/compatibility.md).
 
+## 0.9.5 (2026-11-06, preview)
+
+- **Two texture units** (`GLIDULATOR_TMUS=2`, optional): Glidulator then
+  reports a Voodoo Graphics board with two TMUs, as some boards had. Games
+  that notice it draw two textures in one pass, for example a wall and its
+  lightmap, instead of drawing every wall twice. GLQuake ("Multitexture
+  extensions found"), `timedemo demo1` under Windows 98 on a Core i7-4790
+  (four cores): 76.6 -> 93.8 fps. Half-Life (`-gl`) runs with it too. Also supports textures split into even and odd mipmap levels and
+  trilinear filtering across both units. Costs about 13 MB more memory, so
+  it is meant for Windows; the default stays one TMU.
+- **Faster with textures that have a single mip level** (all platforms):
+  the level of detail is then fixed, so Glidulator no longer recomputes it
+  every 8 pixels and draws a whole scanline in one go. Same image. Single
+  core, replay of captured frames: Burnout -26 %, GTA -28 %, GLQuake
+  -12 % (some of its textures have no mipmaps); no change where every
+  texture is mipmapped (Nature).
+- **Faster with mipmapped textures seen up close** (all platforms): when a
+  triangle can be shown to use the finest mip level for every pixel, the
+  level of detail is no longer recomputed every 8 pixels. Same image.
+  Single core, replay: Nature -19 %, GLQuake -7 to -10 %. Both changes
+  together on a Core i7-4790: GLQuake under Windows 98 67.7 -> 76.1 fps,
+  Nature under DOS 104 -> 117 fps.
+- **Render workers skip triangles they have no lines of** (all
+  platforms): the scanlines are handed out in bands of four, and a worker
+  whose bands a triangle does not touch skips it before any setup. Same
+  picture; 2-7 % faster with many small triangles (Nature, Burnout).
+- **Faster perspective texturing with two TMUs**: when both units use the
+  same W (the normal case), the 1/W division is done once per pixel.
+
+- **Up to eight render workers** (before: four) under DOS and Windows
+  95/98/ME with `GLSMP.VXD`, for CPUs with more than four cores. Windows
+  NT/2000/XP and Wine stay at four with `GLIDULATOR_THREADS=auto`
+  (`GLIDULATOR_THREADS=8` allows more). Tested in virtual machines with
+  eight and nine cores; no machine with more than four cores was at hand.
+
+- **Faster DOS output**: the conversion of every pixel to the screen
+  format (with gamma) is one table lookup now. Nature, 512x384 shown at
+  800x600 on an i7-4790: 2.78 -> 0.52 ms per frame. Almost all of the
+  output time was this conversion, not the writes to video memory.
+- **Faster Voodoo video filter** (`GLIDULATOR_VOODOO_FILTER`): the filter
+  works on one colour channel at a time, and the DOS output of its 32-bit
+  picture uses pre-shifted tables, and its lines are split between the
+  render workers and the game's core. Same picture as before. Nature on
+  an i7-4790 (four cores) with the filter: output 8.0 -> 2.0 ms per frame,
+  56 -> 70 fps.
+- **Faster FSAA output** (`GLIDULATOR_FSAA`, `GLIDULATOR_AA_POST`): the
+  planes are averaged for all three colour channels at once, and the
+  lines are split between the render workers and the game's core. Same
+  picture as before. 640x480 on one core: 1.5 -> 0.3 ms per frame (FSAA
+  2), 2.1 -> 0.4 ms (FSAA 4).
+- **Faster VGA mode 13h output** (`GLIDULATOR_DISPLAY=vga`): no division
+  per pixel any more, and the source rows are summed for three colour
+  channels at once. Same picture as before. 640x480 to 320x200: 1.3 ->
+  0.8 ms per frame on a modern CPU; older CPUs, where division is slow,
+  gain more.
+
+- **The game's core draws too** (all platforms, with up to three render
+  workers): it takes its own share of the scanlines and draws them
+  whenever it would otherwise wait for the workers. Its share follows the
+  game's own work per frame; a game that keeps its core busy leaves all
+  lines to the workers. Nature on an i7-4790: two cores 75 -> 98 fps, four
+  cores 125 -> 143 fps; GLQuake under Windows 98 (`GLSMP.VXD`): 56.6 ->
+  68.9 fps. The picture is unchanged (bit-identical).
+
+- **Render workers share the scanlines by measured speed** (all
+  platforms): each worker times its drawing, and after every frame the
+  lines move from slow to fast workers. Before, every worker had the same
+  number of lines and the frame waited for the slowest -- for example two
+  workers on one Hyper-Threading core (`GLIDULATOR_HT=1`). The picture is
+  unchanged (bit-identical). Nature on an i7-4790 (four cores + HT) with
+  `GLIDULATOR_HT=1`: 100 -> 124 fps, now as fast as the default instead of
+  slower.
+
 ## 0.9.4 (2026-11-04, preview)
 
 - **`GLIDULATOR_HT=1`** (experimental, DOS and Windows 9x): Hyper-Threading
