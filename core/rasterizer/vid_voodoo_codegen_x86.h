@@ -55,7 +55,12 @@ typedef struct voodoo_x86_data_t {
     uint32_t tLOD[2];
     uint32_t trexInit1;
     int      is_tiled;
+    uint32_t detail[2]; /* Glidulator: detail_bias/scale/max are compiled in */
 } voodoo_x86_data_t;
+
+/* Glidulator: detail parameters of a TMU as one key value */
+#define VOODOO_DETAIL_KEY(p, t) \
+    (((uint32_t) (p)->detail_bias[t] & 0xffu) | ((uint32_t) (p)->detail_scale[t] << 8) | ((uint32_t) (p)->detail_max[t] << 16))
 
 static int last_block[VOODOO_MAX_DRAWERS];
 static int next_block_to_write[VOODOO_MAX_DRAWERS];
@@ -558,10 +563,14 @@ codegen_texture_fetch(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *pa
                 addbyte(0xf7); /*NOT EBX*/
                 addbyte(0xd3);
             }
-            addbyte(0xd3); /*SHR EAX, CL*/
-            addbyte(0xe8);
-            addbyte(0xd3); /*SHR EBX, CL*/
-            addbyte(0xeb);
+            /* Glidulator: arithmetic shift like the C path. 86Box used
+             * SHR, which turned a slightly negative coordinate into a
+             * large positive one, so clamping picked the far edge of the
+             * texture instead of texel 0 (point sampling only). */
+            addbyte(0xd3); /*SAR EAX, CL*/
+            addbyte(0xf8);
+            addbyte(0xd3); /*SAR EBX, CL*/
+            addbyte(0xfb);
             if (state->clamp_s[tmu]) {
                 addbyte(0x85); /*TEST EAX, EAX*/
                 addbyte(0xc0);
@@ -634,6 +643,16 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
     int depth_jump_pos  = 0;
     int depth_jump_pos2 = 0;
     int loop_jump_pos   = 0;
+    /* GLIDULATOR: alpha buffer (depth buffering off, FBZ_ALPHA_ENABLE):
+       destination alpha read for blending, alpha written to the aux
+       buffer, as the C path does. */
+    const int abuf       = (params->fbzMode & FBZ_ALPHA_ENABLE) != 0;
+    const int abuf_blend = abuf && (params->alphaMode & (1 << 4));
+    const int abuf_write = abuf && (params->fbzMode & FBZ_DEPTH_WMASK);
+    const int abuf_load  = abuf_blend && (src_afunc == AFUNC_ADST_ALPHA || src_afunc == AFUNC_AOMDST_ALPHA ||
+                                         dest_afunc == AFUNC_ADST_ALPHA || dest_afunc == AFUNC_AOMDST_ALPHA ||
+                                         (abuf_write && dest_aafunc == AFUNC_AONE));
+#define ALPHA_NEEDED ((params->alphaMode & ((1 << 0) | (1 << 4))) || abuf_write)
 #if 0
     xmm_01_w = (uint64_t)0x0001000100010001ull;
     xmm_ff_w = (uint64_t)0x00ff00ff00ff00ffull;
@@ -983,11 +1002,26 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                     addbyte(0xff);
                     break;
                 case TC_MSELECT_DETAIL:
+                    /* Glidulator: bias - LOD in 4.2 format (the register range
+                     * -32..31 covers LOD 0..8 in quarter steps), not whole levels */
                     addbyte(0xb8); /*MOV EAX, params->detail_bias[1]*/
                     addlong(params->detail_bias[1]);
-                    addbyte(0x2b); /*SUB EAX, state->lod*/
-                    addbyte(0x87);
+                    addbyte(0x8b); /*MOV EDX, state->lod*/
+                    addbyte(0x97);
                     addlong(offsetof(voodoo_state_t, lod));
+                    addbyte(0xc1); /*SHL EDX, 2*/
+                    addbyte(0xe2);
+                    addbyte(2);
+                    addbyte(0x29); /*SUB EAX, EDX*/
+                    addbyte(0xd0);
+                    addbyte(0x8b); /*MOV EDX, state->lod_frac[1]*/
+                    addbyte(0x97);
+                    addlong(offsetof(voodoo_state_t, lod_frac[1]));
+                    addbyte(0xc1); /*SHR EDX, 6*/
+                    addbyte(0xea);
+                    addbyte(6);
+                    addbyte(0x29); /*SUB EAX, EDX*/
+                    addbyte(0xd0);
                     addbyte(0xba); /*MOV EDX, params->detail_max[1]*/
                     addlong(params->detail_max[1]);
                     addbyte(0xc1); /*SHL EAX, params->detail_scale[1]*/
@@ -997,6 +1031,16 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                     addbyte(0xd0);
                     addbyte(0x0f); /*CMOVNL EAX, EDX*/
                     addbyte(0x4d);
+                    addbyte(0xc2);
+                    /* Glidulator: and at least 0, like the board (86Box only clamps
+                     * to detail_max; a negative factor garbled every level beyond
+                     * the bias) */
+                    addbyte(0x31); /*XOR EDX, EDX*/
+                    addbyte(0xd2);
+                    addbyte(0x39); /*CMP EAX, EDX*/
+                    addbyte(0xd0);
+                    addbyte(0x0f); /*CMOVL EAX, EDX*/
+                    addbyte(0x4c);
                     addbyte(0xc2);
                     addbyte(0x66); /*MOVD XMM0, EAX*/
                     addbyte(0x0f);
@@ -1130,11 +1174,26 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                     addbyte(0xd8);
                     break;
                 case TCA_MSELECT_DETAIL:
+                    /* Glidulator: bias - LOD in 4.2 format (the register range
+                     * -32..31 covers LOD 0..8 in quarter steps), not whole levels */
                     addbyte(0xb8); /*MOV EAX, params->detail_bias[1]*/
                     addlong(params->detail_bias[1]);
-                    addbyte(0x2b); /*SUB EAX, state->lod*/
-                    addbyte(0x87);
+                    addbyte(0x8b); /*MOV EDX, state->lod*/
+                    addbyte(0x97);
                     addlong(offsetof(voodoo_state_t, lod));
+                    addbyte(0xc1); /*SHL EDX, 2*/
+                    addbyte(0xe2);
+                    addbyte(2);
+                    addbyte(0x29); /*SUB EAX, EDX*/
+                    addbyte(0xd0);
+                    addbyte(0x8b); /*MOV EDX, state->lod_frac[1]*/
+                    addbyte(0x97);
+                    addlong(offsetof(voodoo_state_t, lod_frac[1]));
+                    addbyte(0xc1); /*SHR EDX, 6*/
+                    addbyte(0xea);
+                    addbyte(6);
+                    addbyte(0x29); /*SUB EAX, EDX*/
+                    addbyte(0xd0);
                     addbyte(0xba); /*MOV EDX, params->detail_max[1]*/
                     addlong(params->detail_max[1]);
                     addbyte(0xc1); /*SHL EAX, params->detail_scale[1]*/
@@ -1144,6 +1203,16 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                     addbyte(0xd0);
                     addbyte(0x0f); /*CMOVNL EAX, EDX*/
                     addbyte(0x4d);
+                    addbyte(0xc2);
+                    /* Glidulator: and at least 0, like the board (86Box only clamps
+                     * to detail_max; a negative factor garbled every level beyond
+                     * the bias) */
+                    addbyte(0x31); /*XOR EDX, EDX*/
+                    addbyte(0xd2);
+                    addbyte(0x39); /*CMP EAX, EDX*/
+                    addbyte(0xd0);
+                    addbyte(0x0f); /*CMOVL EAX, EDX*/
+                    addbyte(0x4c);
                     addbyte(0xc2);
                     break;
                 case TCA_MSELECT_LOD_FRAC:
@@ -1284,11 +1353,26 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(0xff);
                 break;
             case TC_MSELECT_DETAIL:
+                /* Glidulator: bias - LOD in 4.2 format (the register range
+                 * -32..31 covers LOD 0..8 in quarter steps), not whole levels */
                 addbyte(0xb8); /*MOV EAX, params->detail_bias[0]*/
                 addlong(params->detail_bias[0]);
-                addbyte(0x2b); /*SUB EAX, state->lod*/
-                addbyte(0x87);
+                addbyte(0x8b); /*MOV EDX, state->lod*/
+                addbyte(0x97);
                 addlong(offsetof(voodoo_state_t, lod));
+                addbyte(0xc1); /*SHL EDX, 2*/
+                addbyte(0xe2);
+                addbyte(2);
+                addbyte(0x29); /*SUB EAX, EDX*/
+                addbyte(0xd0);
+                addbyte(0x8b); /*MOV EDX, state->lod_frac[0]*/
+                addbyte(0x97);
+                addlong(offsetof(voodoo_state_t, lod_frac[0]));
+                addbyte(0xc1); /*SHR EDX, 6*/
+                addbyte(0xea);
+                addbyte(6);
+                addbyte(0x29); /*SUB EAX, EDX*/
+                addbyte(0xd0);
                 addbyte(0xba); /*MOV EDX, params->detail_max[0]*/
                 addlong(params->detail_max[0]);
                 addbyte(0xc1); /*SHL EAX, params->detail_scale[0]*/
@@ -1298,6 +1382,16 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(0xd0);
                 addbyte(0x0f); /*CMOVNL EAX, EDX*/
                 addbyte(0x4d);
+                addbyte(0xc2);
+                /* Glidulator: and at least 0, like the board (86Box only clamps
+                 * to detail_max; a negative factor garbled every level beyond
+                 * the bias) */
+                addbyte(0x31); /*XOR EDX, EDX*/
+                addbyte(0xd2);
+                addbyte(0x39); /*CMP EAX, EDX*/
+                addbyte(0xd0);
+                addbyte(0x0f); /*CMOVL EAX, EDX*/
+                addbyte(0x4c);
                 addbyte(0xc2);
                 addbyte(0x66); /*MOVD XMM4, EAX*/
                 addbyte(0x0f);
@@ -1466,20 +1560,43 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(24);
                 break;
             case TCA_MSELECT_DETAIL:
-                addbyte(0xbb); /*MOV EBX, params->detail_bias[1]*/
-                addlong(params->detail_bias[1]);
-                addbyte(0x2b); /*SUB EBX, state->lod*/
-                addbyte(0x9f);
+                /* Glidulator: TMU0's own detail parameters (86Box used
+                 * TMU1's here; the C path takes TMU0's) */
+                addbyte(0xbb); /*MOV EBX, params->detail_bias[0]*/
+                addlong(params->detail_bias[0]);
+                addbyte(0x8b); /*MOV EDX, state->lod*/
+                addbyte(0x97);
                 addlong(offsetof(voodoo_state_t, lod));
-                addbyte(0xba); /*MOV EDX, params->detail_max[1]*/
-                addlong(params->detail_max[1]);
-                addbyte(0xc1); /*SHL EBX, params->detail_scale[1]*/
+                addbyte(0xc1); /*SHL EDX, 2*/
+                addbyte(0xe2);
+                addbyte(2);
+                addbyte(0x29); /*SUB EBX, EDX*/
+                addbyte(0xd3);
+                addbyte(0x8b); /*MOV EDX, state->lod_frac[0]*/
+                addbyte(0x97);
+                addlong(offsetof(voodoo_state_t, lod_frac[0]));
+                addbyte(0xc1); /*SHR EDX, 6*/
+                addbyte(0xea);
+                addbyte(6);
+                addbyte(0x29); /*SUB EBX, EDX*/
+                addbyte(0xd3);
+                addbyte(0xba); /*MOV EDX, params->detail_max[0]*/
+                addlong(params->detail_max[0]);
+                addbyte(0xc1); /*SHL EBX, params->detail_scale[0]*/
                 addbyte(0xe3);
-                addbyte(params->detail_scale[1]);
+                addbyte(params->detail_scale[0]);
                 addbyte(0x39); /*CMP EBX, EDX*/
                 addbyte(0xd3);
                 addbyte(0x0f); /*CMOVNL EBX, EDX*/
                 addbyte(0x4d);
+                addbyte(0xda);
+                /* Glidulator: and at least 0 */
+                addbyte(0x31); /*XOR EDX, EDX*/
+                addbyte(0xd2);
+                addbyte(0x39); /*CMP EBX, EDX*/
+                addbyte(0xd3);
+                addbyte(0x0f); /*CMOVL EBX, EDX*/
+                addbyte(0x4c);
                 addbyte(0xda);
                 break;
             case TCA_MSELECT_LOD_FRAC:
@@ -1613,7 +1730,7 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         addbyte(0xc0);
     }
 
-    if ((params->alphaMode & ((1 << 0) | (1 << 4))) || (!(cc_mselect == 0 && cc_reverse_blend == 0) && (cc_mselect == CC_MSELECT_AOTHER || cc_mselect == CC_MSELECT_ALOCAL))) {
+    if (ALPHA_NEEDED || (!(cc_mselect == 0 && cc_reverse_blend == 0) && (cc_mselect == CC_MSELECT_AOTHER || cc_mselect == CC_MSELECT_ALOCAL))) {
         /*EBX = a_other*/
         switch (a_sel) {
             case A_SEL_ITER_A:
@@ -1864,7 +1981,7 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         }
     }
 
-    if (params->alphaMode & ((1 << 0) | (1 << 4))) {
+    if ALPHA_NEEDED {
         if (!(cca_mselect == 0 && cca_reverse_blend == 0)) {
             switch (cca_mselect) {
                 case CCA_MSELECT_ALOCAL:
@@ -1908,7 +2025,7 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         }
     }
 
-    if ((params->alphaMode & ((1 << 0) | (1 << 4)))) {
+    if (ALPHA_NEEDED) {
         addbyte(0x31); /*XOR EAX, EAX*/
         addbyte(0xc0);
     }
@@ -1926,12 +2043,12 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         addbyte(0x00);
     }
 
-    if (cca_add && (params->alphaMode & ((1 << 0) | (1 << 4)))) {
+    if (cca_add && ALPHA_NEEDED) {
         addbyte(0x01); /*ADD EDX, ECX*/
         addbyte(0xca);
     }
 
-    if ((params->alphaMode & ((1 << 0) | (1 << 4)))) {
+    if (ALPHA_NEEDED) {
         addbyte(0x85); /*TEST EDX, EDX*/
         addbyte(0xd2);
         addbyte(0x0f); /*CMOVS EDX, EAX*/
@@ -2136,13 +2253,6 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(0xd8);
             }
 
-            /*Divide by 2 to prevent overflow on multiply*/
-            addbyte(0x66); /*PSRAW XMM3, 1*/
-            addbyte(0x0f);
-            addbyte(0x71);
-            addbyte(0xe3);
-            addbyte(1);
-
             switch (params->fogMode & (FOG_Z | FOG_ALPHA)) {
                 case 0:
                     addbyte(0x8b); /*MOV EBX, state->w_depth[EDI]*/
@@ -2188,14 +2298,16 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                     addbyte(0x8b); /*MOV EAX, state->z[EDI]*/
                     addbyte(0x87);
                     addlong(offsetof(voodoo_state_t, z));
-                    addbyte(0xc1); /*SHR EAX, 12*/
+                    /* Glidulator: bits 27..20 like the C path (fog_a =
+                     * (z >> 20) & 0xff); 86Box shifted by 12 here, the
+                     * low depth byte, which cycled through the fog every
+                     * 256 depth steps (stripes along the contours of
+                     * distant terrain, Operation Flashpoint) */
+                    addbyte(0xc1); /*SHR EAX, 20*/
                     addbyte(0xe8);
-                    addbyte(12);
+                    addbyte(20);
                     addbyte(0x25); /*AND EAX, 0xff*/
                     addlong(0xff);
-#if 0
-                    fog_a = (z >> 20) & 0xff;
-#endif
                     break;
 
                 case FOG_ALPHA:
@@ -2250,17 +2362,40 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
 #if 0
             fog_a++;
 #endif
+            /* Glidulator: full 32-bit product like the C path. 86Box
+             * halved the difference first (PSRAW 1 ... PSRAW 7) to stay
+             * within 16 bits, which rounded negative odd differences one
+             * step down: one RGB565 step darker than the C renderer on
+             * fogged pixels. */
+            addbyte(0xf3); /*MOVQ XMM4, XMM3*/
+            addbyte(0x0f);
+            addbyte(0x7e);
+            addbyte(0xe3);
             addbyte(0x66); /*PMULLW XMM3, alookup+4[EAX*8]*/
             addbyte(0x0f);
             addbyte(0xd5);
             addbyte(0x1c);
             addbyte(0xc5);
             addlong(((uintptr_t) alookup) + 16);
-            addbyte(0x66); /*PSRAW XMM3, 7*/
+            addbyte(0x66); /*PMULHW XMM4, alookup+4[EAX*8]*/
             addbyte(0x0f);
-            addbyte(0x71);
+            addbyte(0xe5);
+            addbyte(0x24);
+            addbyte(0xc5);
+            addlong(((uintptr_t) alookup) + 16);
+            addbyte(0x66); /*PUNPCKLWD XMM3, XMM4*/
+            addbyte(0x0f);
+            addbyte(0x61);
+            addbyte(0xdc);
+            addbyte(0x66); /*PSRAD XMM3, 8*/
+            addbyte(0x0f);
+            addbyte(0x72);
             addbyte(0xe3);
-            addbyte(7);
+            addbyte(8);
+            addbyte(0x66); /*PACKSSDW XMM3, XMM3*/
+            addbyte(0x0f);
+            addbyte(0x6b);
+            addbyte(0xdb);
 #if 0
             fog_r = (fog_r * fog_a) >> 8;
             fog_g = (fog_g * fog_a) >> 8;
@@ -2294,6 +2429,12 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         src_g = CLAMP(src_g);
         src_b = CLAMP(src_b);
 #endif
+    }
+
+    if (abuf_write) {
+        addbyte(0x89); /*MOV state->src_a_save[EDI], EDX*/
+        addbyte(0x97);
+        addlong(offsetof(voodoo_state_t, src_a_save));
     }
 
     if ((params->alphaMode & 1) && (alpha_func != AFUNC_NEVER) && (alpha_func != AFUNC_ALWAYS)) {
@@ -2382,6 +2523,68 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         addbyte(0x7e);
         addbyte(0xf4);
 
+        if (abuf_load) {
+            addbyte(0x8b); /*MOV EAX, state->x[EDI]*/
+            addbyte(0x87);
+            if (params->aux_tiled)
+                addlong(offsetof(voodoo_state_t, x_tiled));
+            else
+                addlong(offsetof(voodoo_state_t, x));
+            addbyte(0x01); /*ADD EAX, EAX*/
+            addbyte(0xc0);
+            addbyte(0x03); /*ADD EAX, state->aux_mem[EDI]*/
+            addbyte(0x87);
+            addlong(offsetof(voodoo_state_t, aux_mem));
+            addbyte(0x0f); /*MOVZX EAX, BYTE PTR [EAX]*/
+            addbyte(0xb6);
+            addbyte(0x00);
+            addbyte(0x89); /*MOV state->dest_a_save[EDI], EAX*/
+            addbyte(0x87);
+            addlong(offsetof(voodoo_state_t, dest_a_save));
+        }
+
+#define ABUF_INDEX()                                                                     \
+    do {                                                                                 \
+        addbyte(0x8b); /*MOV EAX, state->dest_a_save[EDI]*/                              \
+        addbyte(0x87);                                                                   \
+        addlong(offsetof(voodoo_state_t, dest_a_save));                                  \
+        addbyte(0x01); /*ADD EAX, EAX*/                                                  \
+        addbyte(0xc0);                                                                   \
+    } while (0)
+/* xmm = xmm * table[EAX*8] / 255 as the other factors (modrm 0x24 XMM4, 0x04 XMM0) */
+#define ABUF_MUL(table, modrm, movq5, padd, paddx5, psrl)                                \
+    do {                                                                                 \
+        addbyte(0x66); /*PMULLW xmm, table[EAX*8]*/                                      \
+        addbyte(0x0f);                                                                   \
+        addbyte(0xd5);                                                                   \
+        addbyte(modrm);                                                                  \
+        addbyte(0xc5);                                                                   \
+        addlong((uint32_t) (table));                                                     \
+        addbyte(0xf3); /*MOVQ XMM5, xmm*/                                                \
+        addbyte(0x0f);                                                                   \
+        addbyte(0x7e);                                                                   \
+        addbyte(movq5);                                                                  \
+        addbyte(0x66); /*PADDW xmm, alookup[1*8]*/                                       \
+        addbyte(0x0f);                                                                   \
+        addbyte(0xfd);                                                                   \
+        addbyte(padd);                                                                   \
+        addlong((uint32_t) alookup + 16);                                                \
+        addbyte(0x66); /*PSRLW XMM5, 8*/                                                 \
+        addbyte(0x0f);                                                                   \
+        addbyte(0x71);                                                                   \
+        addbyte(0xd5);                                                                   \
+        addbyte(8);                                                                      \
+        addbyte(0x66); /*PADDW xmm, XMM5*/                                               \
+        addbyte(0x0f);                                                                   \
+        addbyte(0xfd);                                                                   \
+        addbyte(paddx5);                                                                 \
+        addbyte(0x66); /*PSRLW xmm, 8*/                                                  \
+        addbyte(0x0f);                                                                   \
+        addbyte(0x71);                                                                   \
+        addbyte(psrl);                                                                   \
+        addbyte(8);                                                                      \
+    } while (0)
+
         switch (dest_afunc) {
             case AFUNC_AZERO:
                 addbyte(0x66); /*PXOR XMM4, XMM4*/
@@ -2450,6 +2653,10 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(8);
                 break;
             case AFUNC_ADST_ALPHA:
+                if (abuf) {
+                    ABUF_INDEX();
+                    ABUF_MUL(alookup, 0x24, 0xec, 0x25, 0xe5, 0xd4);
+                }
                 break;
             case AFUNC_AONE:
                 break;
@@ -2523,6 +2730,11 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(8);
                 break;
             case AFUNC_AOMDST_ALPHA:
+                if (abuf) {
+                    ABUF_INDEX();
+                    ABUF_MUL(aminuslookup, 0x24, 0xec, 0x25, 0xe5, 0xd4);
+                    break;
+                }
                 addbyte(0x66); /*PXOR XMM4, XMM4*/
                 addbyte(0x0f);
                 addbyte(0xef);
@@ -2627,6 +2839,10 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(8);
                 break;
             case AFUNC_ADST_ALPHA:
+                if (abuf) {
+                    ABUF_INDEX();
+                    ABUF_MUL(alookup, 0x04, 0xe8, 0x05, 0xc5, 0xd0);
+                }
                 break;
             case AFUNC_AONE:
                 break;
@@ -2700,6 +2916,11 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
                 addbyte(8);
                 break;
             case AFUNC_AOMDST_ALPHA:
+                if (abuf) {
+                    ABUF_INDEX();
+                    ABUF_MUL(aminuslookup, 0x04, 0xe8, 0x05, 0xc5, 0xd0);
+                    break;
+                }
                 addbyte(0x66); /*PXOR XMM0, XMM0*/
                 addbyte(0x0f);
                 addbyte(0xef);
@@ -2875,7 +3096,39 @@ voodoo_generate(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, 
         addbyte(0x56);
     }
 
-    if ((params->fbzMode & (FBZ_DEPTH_WMASK | FBZ_DEPTH_ENABLE)) == (FBZ_DEPTH_WMASK | FBZ_DEPTH_ENABLE)) {
+    if (abuf_write) {
+        if (abuf_blend) { /* as the C path: only factor ONE is applied to alpha */
+            addbyte(0x31); /*XOR EAX, EAX*/
+            addbyte(0xc0);
+            if (dest_aafunc == AFUNC_AONE) {
+                addbyte(0x03); /*ADD EAX, state->dest_a_save[EDI]*/
+                addbyte(0x87);
+                addlong(offsetof(voodoo_state_t, dest_a_save));
+            }
+            if (src_aafunc == AFUNC_AONE) {
+                addbyte(0x03); /*ADD EAX, state->src_a_save[EDI]*/
+                addbyte(0x87);
+                addlong(offsetof(voodoo_state_t, src_a_save));
+            }
+        } else {
+            addbyte(0x8b); /*MOV EAX, state->src_a_save[EDI]*/
+            addbyte(0x87);
+            addlong(offsetof(voodoo_state_t, src_a_save));
+        }
+        addbyte(0x8b); /*MOV EDX, state->x[EDI]*/
+        addbyte(0x97);
+        if (params->aux_tiled)
+            addlong(offsetof(voodoo_state_t, x_tiled));
+        else
+            addlong(offsetof(voodoo_state_t, x));
+        addbyte(0x8b); /*MOV ESI, aux_mem*/
+        addbyte(0xb7);
+        addlong(offsetof(voodoo_state_t, aux_mem));
+        addbyte(0x66); /*MOV [ESI+EDX*2], AX*/
+        addbyte(0x89);
+        addbyte(0x04);
+        addbyte(0x56);
+    } else if ((params->fbzMode & (FBZ_DEPTH_WMASK | FBZ_DEPTH_ENABLE)) == (FBZ_DEPTH_WMASK | FBZ_DEPTH_ENABLE)) {
         addbyte(0x8b); /*MOV EDX, state->x[EDI]*/
         addbyte(0x97);
         if (params->aux_tiled)
@@ -3136,7 +3389,8 @@ voodoo_get_block(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *stat
     for (c = 0; c < 8; c++) {
         data = &codegen_data[odd_even + b * VOODOO_MAX_DRAWERS];
 
-        if (state->xdir == data->xdir && params->alphaMode == data->alphaMode && params->fbzMode == data->fbzMode && params->fogMode == data->fogMode && params->fbzColorPath == data->fbzColorPath && (voodoo->trexInit1[0] & (1 << 18)) == data->trexInit1 && params->textureMode[0] == data->textureMode[0] && params->textureMode[1] == data->textureMode[1] && (params->tLOD[0] & LOD_MASK) == data->tLOD[0] && (params->tLOD[1] & LOD_MASK) == data->tLOD[1] && ((params->col_tiled || params->aux_tiled) ? 1 : 0) == data->is_tiled) {
+        if (state->xdir == data->xdir && params->alphaMode == data->alphaMode && params->fbzMode == data->fbzMode && params->fogMode == data->fogMode && params->fbzColorPath == data->fbzColorPath && (voodoo->trexInit1[0] & (1 << 18)) == data->trexInit1 && params->textureMode[0] == data->textureMode[0] && params->textureMode[1] == data->textureMode[1] && (params->tLOD[0] & LOD_MASK) == data->tLOD[0] && (params->tLOD[1] & LOD_MASK) == data->tLOD[1] && ((params->col_tiled || params->aux_tiled) ? 1 : 0) == data->is_tiled &&
+            VOODOO_DETAIL_KEY(params, 0) == data->detail[0] && VOODOO_DETAIL_KEY(params, 1) == data->detail[1]) {
             last_block[odd_even] = b;
             return data->code_block;
         }
@@ -3162,6 +3416,8 @@ voodoo_get_block(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *stat
     data->tLOD[0]        = params->tLOD[0] & LOD_MASK;
     data->tLOD[1]        = params->tLOD[1] & LOD_MASK;
     data->is_tiled       = (params->col_tiled || params->aux_tiled) ? 1 : 0;
+    data->detail[0]      = VOODOO_DETAIL_KEY(params, 0);
+    data->detail[1]      = VOODOO_DETAIL_KEY(params, 1);
 
     next_block_to_write[odd_even] = (next_block_to_write[odd_even] + 1) & 7;
 
@@ -3248,3 +3504,6 @@ voodoo_codegen_close(voodoo_t *voodoo)
 }
 
 #endif /*VIDEO_VOODOO_CODEGEN_X86_H*/
+#undef ABUF_INDEX
+#undef ABUF_MUL
+#undef ALPHA_NEEDED

@@ -29,20 +29,30 @@ your project.
   first, then reads port 60h for Print Screen (screenshot); no EOI, no PIC
   access. Removed at `grSstWinClose` if the vector still points to it.
   `GLIDULATOR_SCREENSHOT=0` turns it off.
+- While the display is open: a protected-mode handler for INT 21h (DPMI
+  0204h/0205h). It passes every call on unchanged; only for AH=4Ch
+  (program end) while the display is still open, i.e. the game exits
+  without `grSstWinClose`, it first switches to a stack of its own and
+  tears down as `grSstWinClose` would: render cores stopped, INT 09h,
+  write-combining and CR4 restored, text mode set. Without it such an exit
+  left the other cores running on freed memory and the keyboard handler
+  pointing into it (machine hung). Removed at `grSstWinClose` if the vector
+  still points to it.
 - **In ring 0 only** (DOS/4GW without a DPMI host):
   - sets `CR4.OSFXSR` if the BIOS has not, and restores it at
     `grSstWinClose`;
   - adds a write-combining MTRR range for the framebuffer (Intel's MTRR
     update procedure, interrupts off), and restores the original MTRRs at
-    close. Set `GLIDULATOR_WC=0` to disable;
+    close. Set `GLIDULATOR_WC=0` to disable. Under HDPMI32i write-combining
+    goes through PAT instead (below);
   - switches the local APIC back on if it was switched off (global enable
     bit in MSR 1Bh clear, as Windows 98 leaves it after "Restart in MS-DOS
     mode") and the ACPI MADT lists several APICs. If the APIC comes up in
     its reset state, the OVL programs it like the BIOS (SVR enabled, LINT0
     ExtINT, LINT1 NMI) so the 8259's interrupts keep flowing. The original
     MSR value is written back as soon as the other cores are stopped.
-- **In ring 3 under a host with paging (HDPMI32i)**, only for that APIC
-  case: the host's GDT is readable but not writable from ring 3, so the
+- **In ring 3 under a host with paging (HDPMI32i)**, for that APIC case
+  and for write-combining: the host's GDT is readable but not writable from ring 3, so the
   OVL finds its physical page through the host's page tables (CR3 as the
   host emulates it, DPMI 0800h), maps it a second time and uses two free
   entries at the top of the GDT. For each MSR 1Bh access it writes a flat
@@ -51,6 +61,13 @@ your project.
   entries right away. Nothing of ours stays in the GDT between the two
   accesses (switch on, write back). If no free pair is found or the host
   has no page tables (VDPMI), the OVL stays on one core.
+- **Write-combining in ring 3 (HDPMI32i)**: the OVL changes the host's
+  page table entries of its own framebuffer mapping (DPMI 0800h) from
+  PAT entry 0 to PAT entry 5 (PWT and PAT bit set; only if all of them are
+  plain write-back) and sets PAT entry 5, unused by HDPMI, from WT to WC:
+  one WRMSR plus a TLB flush through the call gate, interrupts off. The
+  MTRRs stay untouched. At `grSstWinClose` the entries go back first, then
+  PAT entry 5. Under VDPMI write-combining stays off.
 
 ### Other cores (APs)
 

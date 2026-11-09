@@ -75,8 +75,19 @@ static void *VID_CALL flat_real_ptr(uint16_t seg, uint16_t off) {
     return (void *) (((uint32_t) seg << 4) + off);
 }
 
+static uint32_t g_map_phys, g_map_lin; /* last mapping (vid_dpmi_mapped_lin) */
+
 static void *VID_CALL dpmi_map(uint32_t phys, uint32_t size) {
-    return (void *) dpmi_map_phys(phys, size);
+    uint32_t lin = dpmi_map_phys(phys, size);
+    if (lin) {
+        g_map_phys = phys;
+        g_map_lin  = lin;
+    }
+    return (void *) lin;
+}
+
+uint32_t vid_dpmi_mapped_lin(uint32_t phys) {
+    return g_map_phys == phys ? g_map_lin : 0;
 }
 
 static void VID_CALL dpmi_outb(uint16_t port, uint8_t value) {

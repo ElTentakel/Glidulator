@@ -27,11 +27,30 @@
 
 #define TEX_DIRTY_SHIFT 10
 
-/* GLIDULATOR: 86Box uses 64 slots. Each slot holds a decoded mipmap chain
- * (~600 KB, see TEX_CACHE_SLOT_WORDS in core/glide_abi.c), and 64 slots
- * plus texture memory are too much memory for many DOS setups. Fewer
- * slots only means more frequent re-decoding, never a wrong picture. */
-#define TEX_CACHE_MAX   32
+/* GLIDULATOR: texture cache entries per TMU. 86Box has 64 slots of a full
+ * 256x256 mip chain each (~350 KB); Glidulator keeps many entries whose
+ * decoded data lives in a pool per TMU (TEX_POOL_MB), each sized by the
+ * texture's smallest level index (class 0..8, see voodoo_use_texture):
+ * Unreal-engine games use 100-250 textures per frame, most of them small
+ * lightmaps, and with 32 full-size slots decoded almost every one again in
+ * every frame. Entries are found through a hash table and replaced least
+ * recently used. */
+#define TEX_CACHE_MAX   1024
+#define TEX_HASH_SIZE   1024 /* power of two */
+#define TEX_CLASSES     9    /* smallest level index 0..8 */
+/* Pool per TMU in MB (the most it grows to): a frame of UT or Undying
+ * needs 3-10 MB decoded. DOS keeps less (Pyl's DOS/4GW reports little
+ * memory; before the pool 32 full slots took 11 MB). It grows by need in
+ * pieces of TEX_CHUNK_WORDS (1 MB): most DOS games need 0.5-2.5 MB a
+ * frame, Burnout 4.5 MB (glide_replay --texstats over all captures). */
+#ifndef TEX_POOL_MB
+#    if defined(__DJGPP__) || defined(__WATCOMC__)
+#        define TEX_POOL_MB 8
+#    else
+#        define TEX_POOL_MB 24
+#    endif
+#endif
+#define TEX_CHUNK_WORDS (1024u * 1024u / 4u) /* one piece of the pool, 1 MB */
 /* GLIDULATOR: drawers (render workers, or workers + the game's core),
  * = GLIDE_MT_MAX (core/render_mt.c checks it); per-drawer counters and
  * JIT code slots */
@@ -264,7 +283,15 @@ typedef struct texture_t {
     uint32_t   palette_checksum;
     uint32_t   addr_start[4];
     uint32_t   addr_end[4];
-    uint32_t  *data;
+    uint32_t  *data;      /* data[texture_offset[lod]] = level lod (may point before
+                             block: levels below cls are never read) */
+    uint32_t  *block;     /* GLIDULATOR: this entry's piece of the pool, NULL = none */
+    int        cls;       /* size class of block (smallest level index), -1 = none */
+    uint32_t   last_used; /* tex_frame of the last use (LRU) */
+    int        hnext;     /* next entry in the hash chain, -1 = end */
+    int        fnext;     /* next free entry of the same class, -1 = end */
+    uint32_t   pg_s[4];   /* addr_start/addr_end as 1 KB page bounds within the */
+    uint32_t   pg_e[4];   /* texture memory, [pg_s, pg_e), 0/0 = unused (flush_texture_range) */
 } texture_t;
 
 typedef struct vert_t {
@@ -452,7 +479,7 @@ typedef struct voodoo_t {
     int dual_tmus;
     int type;
 
-    fifo_entry_t fifo[FIFO_SIZE];
+    /* GLIDULATOR: fifo[FIFO_SIZE] (768 KB) removed: Glide calls draw directly */
     ATOMIC_INT   fifo_read_idx;
     ATOMIC_INT   fifo_write_idx;
     ATOMIC_INT   cmd_read;
@@ -462,7 +489,7 @@ typedef struct voodoo_t {
     ATOMIC_INT   pending_fb_writes_buf[VOODOO_BUF_COUNT];
     ATOMIC_INT   pending_draw_cmds_buf[VOODOO_BUF_COUNT];
 
-    voodoo_params_t params_buffer[PARAM_SIZE];
+    /* GLIDULATOR: params_buffer[PARAM_SIZE] (1.2 MB) removed: render_mt.c has its own queue */
 #if (defined __aarch64__ || defined _M_ARM64)
     /* Each params index is on its own 128-byte cache line to prevent false
        sharing between render threads and the FIFO/CPU thread. */
@@ -653,7 +680,7 @@ typedef struct voodoo_t {
 
         clip_t clip[2];
 
-        uint8_t host_data[16384];
+        /* GLIDULATOR: host_data[16384] removed (Banshee 2D, unused) */
         int     host_data_count;
         int     host_data_size_src;
         int     host_data_size_dest;
@@ -693,7 +720,7 @@ typedef struct voodoo_t {
     rgbvoodoo_t clutData[33];
     int         clutData_dirty;
     rgbvoodoo_t clutData256[256];
-    uint32_t    video_16to32[0x10000];
+    /* GLIDULATOR: video_16to32[0x10000] (256 KB) removed: output is in core/ */
 
     uint8_t dirty_line[2048];
     int     dirty_line_low;
@@ -723,15 +750,26 @@ typedef struct voodoo_t {
 
     pc_timer_t wake_timer;
 
-    /* screen filter tables */
-    uint8_t  thefilter[256][256];
-    uint8_t  thefilterg[256][256];
-    uint8_t  thefilterb[256][256];
+    /* GLIDULATOR: screen filter tables thefilter/g/b (192 KB) removed:
+       the video filter is core/vfilter.c */
     uint16_t purpleline[256][3];
 
     texture_t texture_cache[2][TEX_CACHE_MAX];
     uint8_t   texture_present[2][16384];
-    int       texture_last_removed;
+    /* GLIDULATOR: decoded-texture pool per TMU (see TEX_CACHE_MAX) */
+    uint32_t *tex_chunk[2][TEX_POOL_MB]; /* pieces of the pool, 1 MB each */
+    int       tex_chunks[2];     /* pieces allocated (kept until close) */
+    int       tex_chunk_cur[2];  /* piece blocks are carved from */
+    uint32_t  tex_pool_top[2];   /* words handed out in that piece */
+    uint32_t *tex_dummy[2];      /* full-chain buffer for entries without a block */
+    int       tex_hash[2][TEX_HASH_SIZE];
+    int       tex_free[2][TEX_CLASSES + 1]; /* free entries with a block of class k; [TEX_CLASSES]: without block */
+    /* page range [lo, hi) covering all of an entry's levels, hi = 0: no
+     * texture; compact so flush_texture_range scans 8 KB, not the entries */
+    uint32_t  tex_pg_lo[2][TEX_CACHE_MAX];
+    uint32_t  tex_pg_hi[2][TEX_CACHE_MAX];
+    uint32_t  tex_frame;         /* frames drawn (glide buffer swap) */
+    uint32_t  tex_resets;        /* pool resets (trace) */
 
     uint32_t palette_checksum[2];
     int      palette_dirty[2];

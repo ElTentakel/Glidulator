@@ -130,6 +130,18 @@ int platform_write_file(const char *name, const void *data, size_t len);
  * -1 if the file cannot be opened. */
 long platform_read_file(const char *name, size_t offset, void *buf, size_t len);
 
+/* Scroll Lock toggle state: 1 on, 0 off, -1 not available. Starts a frame
+ * capture on demand (CAPTURE.CFG, core/capture.c); only Windows reads it. */
+int platform_scroll_lock(void);
+
+/* 3dfx's splash module (3dfxSpl2.dll/3dfxSpl3.dll: fxSplashInit,
+ * fxSplash, fxSplashShutdown), run as 3dfx's Glide 3 runs it at
+ * grSstWinOpen; the module draws through the loaded glide3x.dll. Returns 1
+ * if it played, 0 if the file is missing or not such a module. Windows
+ * only (0 elsewhere). */
+int platform_run_splash_module(const char *path, uint32_t hwnd, int width, int height, int ncol, int naux,
+                               int color_format);
+
 #ifdef __cplusplus
 }
 #endif

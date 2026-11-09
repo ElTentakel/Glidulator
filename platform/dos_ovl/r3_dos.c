@@ -246,6 +246,8 @@ static void __declspec(naked) r0_entry(void) {
         push ecx
         push edx
         mov ecx, g_r0_msr
+        cmp g_r0_op, 3
+        je r0_wrflush
         cmp g_r0_op, 1
         jne r0_wr
         db 0fh, 32h ; rdmsr
@@ -256,6 +258,14 @@ static void __declspec(naked) r0_entry(void) {
         mov eax, g_r0_lo
         mov edx, g_r0_hi
         db 0fh, 30h ; wrmsr
+        jmp r0_out
+    /* op 3: WRMSR, then flush the TLB (PAT change for write-combining) */
+    r0_wrflush:
+        mov eax, g_r0_lo
+        mov edx, g_r0_hi
+        db 0fh, 30h ; wrmsr
+        mov eax, cr3
+        mov cr3, eax
     r0_out:
         pop edx
         pop ecx
@@ -278,6 +288,23 @@ static void sgdt6(void *buf);
 static int cas8(volatile uint32_t *p, uint32_t old_lo, uint32_t old_hi, uint32_t new_lo, uint32_t new_hi);
 #pragma aux cas8 = 0xf0 0x0f 0xc7 0x0f "setz al" "movzx eax, al" \
     parm [edi] [eax] [edx] [ebx] [ecx] value [eax] modify [edx];
+
+uint32_t r3_page_entry(uint32_t cr3, uint32_t lin, int *large) {
+    uint32_t *pd = (uint32_t *) r3_map_phys(cr3 & 0xfffff000u, 4096), d, t;
+    if (!pd)
+        return 0;
+    d = pd[lin >> 22];
+    r3_unmap(pd);
+    *large = (d & 0x81) == 0x81;
+    if (!(d & 1) || *large)
+        return d;
+    uint32_t *pt = (uint32_t *) r3_map_phys(d & 0xfffff000u, 4096);
+    if (!pt)
+        return 0;
+    t = pt[(lin >> 12) & 1023];
+    r3_unmap(pt);
+    return t;
+}
 
 /* Linear -> physical through the host's page tables; 0 if not present */
 static uint32_t lin_to_phys(uint32_t cr3, uint32_t lin) {
@@ -375,4 +402,60 @@ int r3_gate_wrmsr(uint32_t msr, uint32_t lo, uint32_t hi) {
     g_r0_lo  = lo;
     g_r0_hi  = hi;
     return gate_run();
+}
+
+int r3_gate_wrmsr_flush(uint32_t msr, uint32_t lo, uint32_t hi) {
+    if (!g_gate_ent)
+        return 0;
+    g_r0_op  = 3;
+    g_r0_msr = msr;
+    g_r0_lo  = lo;
+    g_r0_hi  = hi;
+    return gate_run();
+}
+
+/* One pass over the 4 KB page table entries of [lin, lin + size): check
+ * (write 0) that every entry is present with (e & mask) == from, or write
+ * (write 1) e = (e & ~mask) | to. Page tables mapped once per 4 MB. */
+static int pte_pass(uint32_t cr3, uint32_t lin, uint32_t size, uint32_t mask, uint32_t from, uint32_t to, int write) {
+    uint32_t *pd = (uint32_t *) r3_map_phys(cr3 & 0xfffff000u, 4096);
+    uint32_t  a = lin & 0xfffff000u, end = lin + size;
+    int       ok = 1;
+    if (!pd)
+        return 0;
+    while (ok && a < end) {
+        uint32_t d = pd[a >> 22];
+        if (!(d & 1) || (d & 0x80)) {
+            ok = 0; /* not present or a 4 MB page */
+            break;
+        }
+        volatile uint32_t *pt = (volatile uint32_t *) r3_map_phys(d & 0xfffff000u, 4096);
+        if (!pt) {
+            ok = 0;
+            break;
+        }
+        do {
+            volatile uint32_t *e = &pt[(a >> 12) & 1023];
+            if (!(*e & 1)) {
+                ok = 0;
+                break;
+            }
+            if (write)
+                *e = (*e & ~mask) | to;
+            else if ((*e & mask) != from) {
+                ok = 0;
+                break;
+            }
+            a += 4096;
+        } while (a < end && (a & 0x3fffff));
+        r3_unmap((void *) pt);
+    }
+    r3_unmap(pd);
+    return ok;
+}
+
+int r3_pte_change(uint32_t cr3, uint32_t lin, uint32_t size, uint32_t mask, uint32_t from, uint32_t to) {
+    if (!pte_pass(cr3, lin, size, mask, from, to, 0))
+        return 0;
+    return pte_pass(cr3, lin, size, mask, from, to, 1);
 }

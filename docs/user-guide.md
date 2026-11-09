@@ -12,6 +12,7 @@ before calling technical support; there is no technical support.
 |---|---|
 | `BIN\GLIDE2X.OVL` | Glide 2.x for DOS games (DOS/4G LE DLL, loaded by the game) |
 | `BIN\glide2x.dll` | Glide 2.x for Windows 9x games |
+| `BIN\glide3x.dll` | Glide 3.x for Windows games with a Glide 3 renderer |
 | `BIN\GLSMP.VXD` | Multi-core rendering under Windows 95/98/ME: loaded by `glide2x.dll` while the game runs (optional) |
 | `BIN\TRACE\`, `BIN\DEBUG\` | The same files in the Trace and Debug variants |
 | `GLIDULAT.CFG` | Example settings file: every setting, commented out, with its default |
@@ -45,7 +46,8 @@ Requirements and recommendations:
 - **For multi-core rendering and the JIT**, boot DOS without a memory
   manager, or with HIMEM only. The DPMI host HDPMI32i (also on top of
   EMM386 or JEMMEX, as used for SBEMU) works too: the OSD then shows
-  `SMP PAGING`; write-combining stays off there. Under EMM386 or other
+  `SMP PAGING`; write-combining works there too (through a call gate to
+  ring 0), but not under the VDPMI pre-release. Under EMM386 or other
   VCPI managers without HDPMI32i and in the DOS box of Windows, the OVL
   renders on one core with the C path; everything else works.
   After "Restart in MS-DOS mode" from Windows 98, the OVL switches the
@@ -81,6 +83,16 @@ later boots in it unless the firmware selects x2APIC).
 
 For games using the 3dfx MiniGL (`opengl32.dll` for Voodoo), keep that DLL.
 It calls `glide2x.dll`.
+
+**Glide 3 games.** Games made for Voodoo2 and later cards often load
+`glide3x.dll` instead of `glide2x.dll` (for example Need for Speed: Porsche
+Unleashed, Diablo II, Slave Zero). Copy `glide3x.dll` from the package next
+to the game's renderer DLL in the same way, together with `GLSMP.VXD`.
+It reports a Voodoo2 with two texture units and uses the same settings.
+Which file a game loads is usually visible in its directory (an existing
+`glide3x.dll` or `glide2x.dll`); when in doubt, copy both. Some games ship
+both renderers and need a particular one: Unreal-engine games (Unreal,
+Unreal Tournament, Undying) use `glide2x.dll`.
 
 ## 3. Settings
 
@@ -132,7 +144,8 @@ glidulator_fsaa = 2      anything after the value is ignored
 | Visible bands where textures switch to a smaller mipmap | `GLIDULATOR_LOD_DITHER=1` |
 | The 1997 look | `GLIDULATOR_VOODOO_FILTER=1`, `GLIDULATOR_SPLASH=original` with `GLIDULATOR_SPLASH_FILE`, `GLIDULATOR_CRT=1` |
 | Voodoo Rush version of a game quits after the intro | `GLIDULATOR_BOARD=rush` |
-| Faster lightmapped games (GLQuake, Quake II, Half-Life, Unreal) | `GLIDULATOR_TMUS=2` |
+| Faster lightmapped DOS games | `GLIDULATOR_TMUS=2` (Windows: already the default) |
+| A Windows game draws wrongly with two texture units | `GLIDULATOR_TMUS=1` (please report it) |
 | Rule out multi-core or JIT problems | `GLIDULATOR_THREADS=1`, `GLIDULATOR_RENDERER=c` |
 | Brighter or darker picture | `SST_GAMMA=1.0` (darker) ... `1.7` (brighter) |
 
@@ -149,7 +162,7 @@ the Windows DLL.
 | `GLIDULATOR_HT` | `0`, `1` | `0` | Experimental, DOS and Windows 95/98/ME (`GLSMP.VXD`): `1` lets Hyper-Threading siblings run render workers too, as if every logical processor were a core of its own. Real cores are still used first, the sibling of the game's core last. The default (one worker per physical core, the game's core drawing too) is faster with 2 cores + HT; with 4 or more cores `1` is about as fast and can help in games with much drawing (GLQuake under Windows 98, 4 cores + HT: +11 %). Windows NT/2000/XP always use every logical processor. |
 | `GLIDULATOR_VSYNC` | `auto`, `0`, `1` | `auto` | DOS only: wait for vertical retrace before showing a frame. `auto` follows the game's `grBufferSwap` interval, `1` always waits, `0` never. Keeps games that time their logic per frame at the original speed. |
 | `GLIDULATOR_BOARD` | `voodoo`, `rush` | `voodoo` | Which 3dfx board Glidulator reports to the game. `voodoo` = Voodoo Graphics. `rush` = Voodoo Rush, for Rush patches that refuse to run on anything else, such as Tomb Raider's `TUMBRUSH.EXE` (it quits right after the intro videos without a message). Rendering is the same; leave it at `voodoo` for all other games. |
-| `GLIDULATOR_TMUS` | `1`, `2` | `1` | Texture units (TMUs) of the reported Voodoo Graphics board. `2` = a board with two TMUs, as some Voodoo Graphics boards had (2 MB texture memory each). Games that notice it draw two textures in one pass instead of two, for example a wall and its lightmap; that saves about half of their triangles. Also enables trilinear filtering across both units for games that ask for it. Costs 13 MB more memory, so under DOS only for games that leave enough of it free. Ignored with `GLIDULATOR_BOARD=rush` (the Rush has one TMU). |
+| `GLIDULATOR_TMUS` | `1`, `2` | Windows `2`, DOS `1` | Texture units (TMUs) of the reported Voodoo Graphics board. `2` = a board with two TMUs, as some Voodoo Graphics boards had (each with its own texture memory: 4 MB under Windows, 2 MB under DOS). Games that notice it draw two textures in one pass instead of two, for example a wall and its lightmap; that saves about half of their triangles. Also enables trilinear filtering across both units for games that ask for it. With one unit, Unreal-engine games such as Undying leave dark rectangles around see-through objects. Costs about 3 MB more memory under DOS (2 MB texture memory plus a texture cache that grows by need, up to 10 MB in all for games with many textures; about 30 MB under Windows). Under DOS one unit stays the default: the DOS games tested (Nature, Dimension, Pył, Redguard) run with two but do not use the second. Ignored with `GLIDULATOR_BOARD=rush` (the Rush has one TMU). |
 | `SST_GAMMA` | number | `1.3` | Output gamma like the Voodoo RAMDAC (the variable name of 3dfx's driver). `1.0` is neutral; higher values are brighter. |
 
 ### Display
@@ -183,7 +196,7 @@ The options can be combined. The on-screen display is not filtered.
 | `GLIDULATOR_SPLASH` | `gl1`, `off`, `original` | `gl1` | Logo after the first `grSstWinOpen`. `gl1`: the Glidulator animation (4.1 s): a moonlit night sea, a tentacle rising out of the water in front of the moon, and the chrome GLIDULATOR wordmark with a glint running along it. Skipped under DOS without a clock (no TSC, e.g. DOSBox). `original`: 3dfx's own spinning-logo animation (2.5 s), read from an original Glide 2.x file (see below). (The older value `crt` still means `GLIDULATOR_CRT=1` without a logo.) |
 | `GLIDULATOR_SCREENSHOT` | `0`, `1`, `2` | `1` | DOS: Print Screen saves the next frame as `SHOT0000.BMP`, `SHOT0001.BMP`, ... in the current directory (24-bit BMP in the game's render resolution, with gamma, without OSD, scaling or video filter). `2`: the same, but with the OSD (`GLIDULATOR_OSD=1`) in the picture, for example to share frame rates. While the game runs, the OVL puts a small handler in front of the game's keyboard handler; it only looks at the key and passes everything on. `0` leaves the keyboard alone. Under Windows, Print Screen stays Windows' own (desktop to the clipboard). |
 | `GLIDULATOR_CRT` | `0`, `1` | `0` | Monitor effect: every switch to the Voodoo picture looks like an analog monitor locking onto a new signal (the picture rolls, lines bend, brightness settles, a little static), and switching back loses sync the same way. Works with or without a logo. Under DOS the switch back is skipped if the program has already returned to text mode itself. |
-| `GLIDULATOR_SPLASH_FILE` | path without spaces | - | An original Voodoo Graphics `GLIDE2X.OVL` or `glide2x.dll` (as shipped with many games; either file works on both systems). Glidulator reads only the animation's model and textures from it and draws them itself; nothing from the file is executed. If the file is missing or contains no splash data, the Glidulator animation plays instead. |
+| `GLIDULATOR_SPLASH_FILE` | path without spaces | - | An original Voodoo Graphics `GLIDE2X.OVL` or `glide2x.dll` (as shipped with many games; either file works on both systems). Glidulator reads only the animation's model and textures from it and draws them itself; nothing from the file is executed. If the file is missing or contains no splash data, the Glidulator animation plays instead. Glide 3 games (Windows `glide3x.dll`) can instead use 3dfx's Glide 3 splash module `3dfxSpl3.dll` (shipped with Voodoo3/Banshee drivers and some games): a file whose name starts with `3dfxSpl` is loaded and run as it was by 3dfx's own `glide3x.dll`, drawing its 3D logo through Glidulator. If it does not load, the Glidulator animation plays. |
 
 Like 3dfx's driver, the logo plays once per program start and the game
 then finds Glide in its initial state. The start-up show is never part of
@@ -208,7 +221,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.5 (trace)
+Glidulator GL-1 0.9.6 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame
@@ -223,16 +236,25 @@ The Debug variant additionally:
 - **Records frames** for replay on a development machine (`CAPnn.BIN`,
   `TEXnn.BIN`, `TABnn.BIN`). A file `CAPTURE.CFG` with `first interval
   count` controls which frames are recorded; `0 1 0` disables recording.
+  Under Windows a fourth value `1` (`0 20 40 1`) records only while
+  Scroll Lock is on: switch it on when the scene starts, off when it ends.
 - **DOS only: handles crashes itself.** On a CPU exception or machine
   check it logs registers, the code address and the machine-check banks of
   all cores, stops the extra cores, restores write-combining and text mode
   and exits.
 
+All DOS variants also clean up when a game quits without closing Glide
+(for example after an error message about a missing sound card): the
+extra cores stop, write-combining and the keyboard go back to normal and
+the screen returns to text mode, so DOS keeps working. The game's own
+error text may be lost with the mode switch; the Trace log notes
+`Close: program ends without grSstWinClose`.
+
 ## 5. Troubleshooting
 
 | Symptom | Remedy |
 |---|---|
-| The game says no 3Dfx card was found | Make sure the game uses our `GLIDE2X.OVL`/`glide2x.dll` (game directory) and its 3Dfx option. Statically linked Glide games cannot use Glidulator. |
+| The game says no 3Dfx card was found | Make sure the game uses our `GLIDE2X.OVL`/`glide2x.dll` (game directory) and its 3Dfx option. Games with a Glide 3 renderer need `glide3x.dll` instead. Statically linked Glide games cannot use Glidulator. |
 | DOS: `DOS/16M error: [40]` | Boot without memory manager (see Installation). |
 | DOS: only one core used (OSD `SMP OFF`), OSD shows `C` instead of `JIT` | A memory manager or the Windows DOS box is active (no ring 0). Boot plain DOS. |
 | Windows 9x: only one core used (OSD `1/1 CORE`, `SMP OFF`) | `GLSMP.VXD` must lie next to `glide2x.dll`. The Trace log's `Multi-core:` line gives the reason otherwise (e.g. x2APIC mode). |

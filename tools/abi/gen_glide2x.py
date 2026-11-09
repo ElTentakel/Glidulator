@@ -29,7 +29,7 @@ REAL_IMPL = {
     "grCullMode", "grColorMask", "grChromakeyMode", "grChromakeyValue", "grHints",
     # core/glide_tex.c
     "grTexDownloadMipMapLevel", "grTexDownloadMipMapLevelPartial", "grTexDownloadTable",
-    "grTexDownloadTablePartial", "grTexFilterMode", "grTexClampMode", "grTexMipMapMode", "grTexLodBiasValue",
+    "grTexDownloadTablePartial", "grTexMultibase", "grTexMultibaseAddress", "grTexDetailControl", "grTexFilterMode", "grTexClampMode", "grTexMipMapMode", "grTexLodBiasValue",
     # core/glide_lfb.c
     "grLfbWriteRegion", "grLfbReadRegion", "grLfbLock", "grLfbUnlock", "grLfbWriteColorFormat",
     "grLfbConstantAlpha", "grLfbConstantDepth",
@@ -150,6 +150,15 @@ def gen_header(funcs, types_frag, constants_path, out_path):
         if name in already_defined:
             continue  # already defined by types.h.frag (same value)
         lines.append("#define %s %s" % (name, val))
+    lines.append("")
+    lines.append("/* ---- Glide 3 build -------------------------------------------------------")
+    lines.append(" * glide3x.dll links the same core: its Glide 3 entry points have the real")
+    lines.append(" * names (exported through targets/glide_dll/glide3x.def), so the Glide 2")
+    lines.append(" * implementation is renamed to g2_* (core/glide3_abi.c calls it). */")
+    lines.append("#ifdef GLIDULATOR_GLIDE3")
+    for f in funcs:
+        lines.append("#define %s g2_%s" % (f["name"], f["name"]))
+    lines.append("#endif")
     lines.append("")
     lines.append("/* ---- Functions (abi/glide2x.api, %d) ---------------------------------- */" % len(funcs))
     for f in funcs:

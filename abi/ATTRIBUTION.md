@@ -16,3 +16,13 @@ unchanged.
   which functions Glidulator implements is listed there (`REAL_IMPL`).
 
 Glide is a trademark of its owner.
+
+# Glide 3.x ABI description
+
+`glide3x.api` lists the 93 functions of 3dfx's Glide 3.x runtime for the
+Voodoo2 (names and signatures only), machine-extracted from the public
+header `glide.h`/`glideutl.h` of the 3dfx Glide 3 source release
+(`glide3x/cvg/glide3/src`, as mirrored at github.com/sezero/glide). The
+numeric Glide 3 constants Glidulator needs are written as `G3_*` facts in
+`core/glide3_abi.c`; no header text is reproduced. Glidulator's
+implementation of these functions is its own.

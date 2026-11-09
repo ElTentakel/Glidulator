@@ -6,7 +6,7 @@ No add-in board. No pass-through cable. No jumpers. Every core a tentacle.
 
 **ElTentakel Graphics Systems** proudly presents the **Glidulator GL-1**, a
 software implementation of the 3dfx Voodoo Graphics accelerator and its
-Glide 2.x programming interface for **MS-DOS** and **Windows 98**.
+Glide 2.x and 3.x programming interfaces for **MS-DOS** and **Windows 98**.
 
 Drop one file next to your favourite late-90s game, and it renders through
 Glidulator instead of a Voodoo card: texture-mapped, perspective-correct,
@@ -31,22 +31,27 @@ The GL-1 would not exist without these projects and the people behind them:
   description and the LE loader used in tests. See
   [abi/ATTRIBUTION.md](abi/ATTRIBUTION.md) and
   [tools/leload/ATTRIBUTION.md](tools/leload/ATTRIBUTION.md).
-- The **3dfx Glide 2.x source release** (sezero/glide), the reference for
-  driver behaviour.
+- The **3dfx Glide 2.x and 3.x source release** (sezero/glide), the
+  reference for driver behaviour and the source of the Glide 3.x ABI
+  description (names and signatures only, see
+  [abi/ATTRIBUTION.md](abi/ATTRIBUTION.md)).
 
 ## Product highlights
 
-- **Drop-in replacement**: `GLIDE2X.OVL` for DOS games (DOS/4G LE DLL) and
-  `glide2x.dll` (plus `GLSMP.VXD` for multi-core) for Windows 9x games. All 132 Glide 2.x entry points and the
-  14 `pci*` helpers of the original runtime are exported with their original
-  names; nothing is installed and nothing in the system is changed
+- **Drop-in replacement**: `GLIDE2X.OVL` for DOS games (DOS/4G LE DLL),
+  `glide2x.dll` for Windows 9x games and `glide3x.dll` for Windows games
+  with a Glide 3 renderer (plus `GLSMP.VXD` for multi-core). All 132
+  Glide 2.x entry points and the 14 `pci*` helpers of the original runtime
+  are exported with their original names, and the 93 entry points of
+  Glide 3.x; nothing is installed and nothing in the system is changed
   permanently.
 - **Faithful rendering**: Glide calls program the same Voodoo registers the
   original driver did, and a register-accurate rasterizer (PCem/86Box,
   see above) draws the triangles. Gamma like the Voodoo RAMDAC, 4x4 dithering
   like the chip.
-- **Optional second texture unit** (`GLIDULATOR_TMUS=2`), as on some
-  Voodoo Graphics boards: lightmapped games draw two textures in one pass.
+- **Second texture unit**, as on some Voodoo Graphics boards: lightmapped
+  games draw two textures in one pass. Standard under Windows; under DOS
+  optional (`GLIDULATOR_TMUS=2`).
 - **Multi-core rendering**: up to eight render workers, also under plain
   DOS and Windows 95/98/ME, where Glidulator starts the additional CPU
   cores itself (under Windows through the small `GLSMP.VXD` next to the
@@ -73,7 +78,7 @@ The GL-1 would not exist without these projects and the people behind them:
 
 |            | DOS                                            | Windows                                              |
 |------------|------------------------------------------------|------------------------------------------------------|
-| File       | `GLIDE2X.OVL`                                  | `glide2x.dll`                                        |
+| File       | `GLIDE2X.OVL`                                  | `glide2x.dll`, `glide3x.dll` (Glide 3)               |
 | Host       | MS-DOS / FreeDOS with DOS/4GW games            | Windows 95/98/ME (also runs under Wine)              |
 | Display    | VBE 2.0 linear framebuffer (15/16/24/32 bpp)   | GDI, own full-screen window                          |
 |            | fallback VGA mode 13h                          |                                                      |
@@ -82,28 +87,29 @@ The GL-1 would not exist without these projects and the people behind them:
 
 ## Quick start
 
-The current version is **0.9.5, a preview release**: the tested titles
+The current version is **0.9.6, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-095)). Download the
-package `glidulator-0.9.5.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-096)). Download the
+package `glidulator-0.9.6.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.5 (all versions: [CHANGES.md](CHANGES.md)):
+New in 0.9.6 (all versions: [CHANGES.md](CHANGES.md)):
 
-- **Two texture units** (`GLIDULATOR_TMUS=2`, optional): a Voodoo Graphics
-  board with two TMUs. GLQuake and Half-Life draw walls and lightmaps in
-  one pass; GLQuake under Windows 98 on a Core i7-4790: 76.6 -> 93.8 fps.
-- **Faster texturing**: the level of detail is no longer recomputed every
-  8 pixels where it cannot change the picture (single mip level, or the
-  finest one for a whole triangle). Same image; Core i7-4790: GLQuake
-  67.7 -> 76.1 fps (Windows 98), Nature 104 -> 117 fps (DOS).
-- **The game's core draws too**, and the workers share the scanlines by
-  measured speed: Nature on two cores 75 -> 98 fps, GLQuake under
-  Windows 98 56.6 -> 68.9 fps.
-- **Up to eight render workers** (before: four) under DOS and Windows 9x.
-- **Faster output**: DOS colour conversion 2.8 -> 0.5 ms per frame, Voodoo
-  video filter 8.0 -> 2.0 ms, FSAA averaging about five times faster, VGA
-  mode 13h faster.
+- **Glide 3** (`glide3x.dll`) for Windows games with a Glide 3 renderer:
+  Need for Speed: Porsche Unleashed (75-81 fps on a Core i7-4790 under
+  Windows 98), Diablo II, Slave Zero, Operation Flashpoint. With
+  `GLIDULATOR_SPLASH=original` it can show 3dfx's own Glide 3 logo from
+  `3dfxSpl3.dll`.
+- **Unreal-engine games**: 4 MB texture memory, two texture units by
+  default under Windows, faster texture uploads and a pooled texture
+  cache. Clive Barker's Undying, first level: 17 -> 42 fps; Unreal Gold's
+  castle flyby 30-55 -> 59-84 fps (Core i7-4790, Windows 98).
+- **DOS**: write-combining also under SBEMU (Redguard 35.9 -> 72 fps), a
+  clean exit when a game quits without closing Glide, less memory (two
+  texture units now cost 3 MB instead of 13 MB).
+- **Alpha buffer** (destination alpha, Lands of Lore: Guardians of
+  Destiny), detail and multi-base textures, and exact fog in the fast
+  renderer (Operation Flashpoint, Redguard).
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 
@@ -114,8 +120,9 @@ New in 0.9.5 (all versions: [CHANGES.md](CHANGES.md)):
    | Debug   | `BIN\DEBUG\` | Diagnose problems.                           |
 
 2. Copy `GLIDE2X.OVL` (DOS) or `glide2x.dll` (Windows) into the game's
-   directory, replacing the one shipped with the game. Under Windows 9x,
-   copy `GLSMP.VXD` next to `glide2x.dll` for multi-core rendering.
+   directory, replacing the one shipped with the game; for a game with a
+   Glide 3 renderer, `glide3x.dll` instead. Under Windows 9x, copy
+   `GLSMP.VXD` next to the DLL for multi-core rendering.
 3. Start the game and select its 3Dfx/Glide renderer.
 4. Optional: copy the example `GLIDULAT.CFG` from the package next to it
    and remove the `#` in front of the settings you want to change. See the
@@ -127,9 +134,13 @@ Tested titles are listed in [docs/compatibility.md](docs/compatibility.md),
 among them:
 
 - **DOS**: Nature, Dimension, Shortcut, Trip, Fucktory, Grand Theft Auto,
-  Burnout, The Elder Scrolls Adventures: Redguard, Pył.
-- **Windows**: GLQuake (with the original 3dfx MiniGL), Half-Life,
-  Nature95, Formula 1, Operation 3DFX '98.
+  Burnout, Archimedean Dynasty, The Elder Scrolls Adventures: Redguard,
+  Lands of Lore: Guardians of Destiny, Pył.
+- **Windows (Glide 2)**: GLQuake (with the original 3dfx MiniGL),
+  Half-Life, Unreal Tournament, Unreal Gold, Clive Barker's Undying,
+  Uprising, Nature95, Formula 1, Operation 3DFX '98.
+- **Windows (Glide 3)**: Need for Speed: Porsche Unleashed, Diablo II,
+  Slave Zero, Operation Flashpoint.
 
 Games that link Glide statically instead of loading the OVL/DLL (e.g. the
 3Dfx versions of Tomb Raider and Carmageddon) cannot be supported this way.
@@ -157,6 +168,7 @@ Details are in [docs/development.md](docs/development.md).
 make test                            # reference build and unit/render tests (ASan/UBSan)
 make ovl-all                         # GLIDE2X.OVL: release, trace and debug variants
 make win98 win98-trace win98-debug   # glide2x.dll variants
+make win98-g3-all                    # glide3x.dll variants
 make dosbox-test                     # load the OVL in DOSBox and check the picture
 make dist                            # release package in build/dist/
 ```

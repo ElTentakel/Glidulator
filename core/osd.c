@@ -314,22 +314,49 @@ void glide_osd_close(void) {
 
 #ifdef GLIDULATOR_TRACE
 uint64_t g_perf_tex_us, g_perf_lfb_us;
+uint64_t g_perf_tex_copy_cyc, g_perf_tex_flush_cyc, g_perf_tex_bytes, g_perf_tex_calls;
+uint64_t g_perf_tex_tables, g_perf_tex_misses, g_perf_tex_decode_cyc;
+
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+uint64_t glide_trace_cycles(void) {
+    return __builtin_ia32_rdtsc();
+}
+#elif defined(__WATCOMC__)
+static void rdtsc_tr(uint32_t *lo_hi);
+#pragma aux rdtsc_tr = 0x0f 0x31 "mov [ecx], eax" "mov [ecx+4], edx" parm [ecx] modify [eax edx];
+uint64_t glide_trace_cycles(void) {
+    uint32_t v[2];
+    rdtsc_tr(v);
+    return ((uint64_t) v[1] << 32) | v[0];
+}
+#else
+uint64_t glide_trace_cycles(void) {
+    return platform_time_us();
+}
+#endif
 
 /* Trace variants: one line per 100 frames into GLIDULAT.LOG on every
  * platform (the Windows DLL also writes its output details). */
 static void trace_perf(uint64_t now, uint64_t render, uint64_t wait, uint64_t out) {
-    static uint64_t start, sum_render, sum_wait, sum_out;
+    static uint64_t start, start_cyc, sum_render, sum_wait, sum_out;
     static unsigned frames;
-    char            line[128];
+    char            line[160];
     char           *p = line, *end = line + sizeof line - 2;
-    if (!frames)
-        start = now;
+    if (!frames) {
+        start     = now;
+        start_cyc = glide_trace_cycles();
+    }
     sum_render += render;
     sum_wait += wait;
     sum_out += out;
     if (++frames < 100)
         return;
     uint64_t dt = now - start;
+    /* cycles per microsecond over this period (TSC: constant rate) */
+    uint64_t cyc   = glide_trace_cycles() - start_cyc;
+    uint64_t cpu   = dt ? cyc / dt : 0;
+#define CYC_US(c) (cpu ? (unsigned) ((c) / 100 / cpu) : 0)
+    g_perf_tex_us += cpu ? (g_perf_tex_copy_cyc + g_perf_tex_flush_cyc) / cpu : 0;
     p           = put_str(p, end, "Frame: ");
     p           = put_tenths(p, end, dt ? (unsigned) (1000000000ull / dt) : 0);
     p           = put_str(p, end, " fps, game+render ");
@@ -350,6 +377,29 @@ static void trace_perf(uint64_t now, uint64_t render, uint64_t wait, uint64_t ou
     g_perf_tex_us = g_perf_lfb_us = 0;
     *p          = 0;
     platform_log(line);
+    if (g_perf_tex_calls + g_perf_tex_tables + g_perf_tex_misses >= 100) {
+        p = line;
+        p = put_str(p, end, "Textures per frame: copy ");
+        p = put_uint(p, end, CYC_US(g_perf_tex_copy_cyc));
+        p = put_str(p, end, " us, flush ");
+        p = put_uint(p, end, CYC_US(g_perf_tex_flush_cyc));
+        p = put_str(p, end, " us, ");
+        p = put_uint(p, end, (unsigned) (g_perf_tex_bytes / 100 / 1024));
+        p = put_str(p, end, " KB in ");
+        p = put_uint(p, end, (unsigned) (g_perf_tex_calls / 100));
+        p = put_str(p, end, " writes, tables ");
+        p = put_uint(p, end, (unsigned) (g_perf_tex_tables / 100));
+        p = put_str(p, end, ", cache misses ");
+        p = put_uint(p, end, (unsigned) (g_perf_tex_misses / 100));
+        p = put_str(p, end, " (decode ");
+        p = put_uint(p, end, CYC_US(g_perf_tex_decode_cyc));
+        p = put_str(p, end, " us)\n");
+        *p = 0;
+        platform_log(line);
+    }
+    g_perf_tex_copy_cyc = g_perf_tex_flush_cyc = g_perf_tex_bytes = g_perf_tex_calls = 0;
+    g_perf_tex_tables = g_perf_tex_misses = g_perf_tex_decode_cyc = 0;
+#undef CYC_US
     frames = 0;
     sum_render = sum_wait = sum_out = 0;
 }

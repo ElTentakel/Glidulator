@@ -12,6 +12,7 @@
  */
 
 #include "glide_internal.h"
+#include "glidulator/capture.h"
 #include "glidulator/trace.h"
 
 #include <math.h>
@@ -25,6 +26,7 @@
  * attenuate the colour or only add fog (for multi-pass rendering). */
 void GR_EXPORT GLIDE_API grFogMode(GrFogMode_t mode) {
     GLIDE_TRACE("grFogMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_FOG_MODE, mode);
     uint32_t fm = g_voodoo.params.fogMode & ~(uint32_t) FOG_BITS;
     switch (mode & 0xff) {
     case GR_FOG_WITH_ITERATED_ALPHA: fm |= FOG_ENABLE | FOG_ALPHA; break;

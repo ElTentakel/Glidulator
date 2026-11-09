@@ -8,7 +8,8 @@ but still has known issues (see below). Reports are welcome.
 
 WHAT IT IS
   A software implementation of the 3dfx Voodoo Graphics accelerator and
-  its Glide 2.x programming interface for MS-DOS and Windows 95/98/ME.
+  its Glide 2.x and 3.x programming interfaces for MS-DOS and Windows
+  95/98/ME.
   Drop one file next to a late-90s Glide game, and it renders through
   Glidulator instead of a Voodoo card. Under plain DOS and Windows
   95/98/ME it puts the other CPU cores to work as additional render units.
@@ -24,12 +25,13 @@ BUILT ON THE WORK OF OTHERS
     and video filter at the heart of Glidulator.
   - MGA-Glide by ranulphus (MIT): the clean-room Glide 2.x ABI
     description.
-  - The 3dfx Glide 2.x source release (sezero/glide), the reference for
-    driver behaviour.
+  - The 3dfx Glide 2.x and 3.x source release (sezero/glide), the
+    reference for driver behaviour and the Glide 3.x interface.
 
 CONTENTS
   BIN\GLIDE2X.OVL        Glide for DOS games (release variant)
   BIN\GLIDE2X.DLL        Glide for Windows 9x games (release variant)
+  BIN\GLIDE3X.DLL        Glide 3 for Windows games with a Glide 3 renderer
   BIN\GLSMP.VXD          Windows 9x multi-core helper, next to the DLL
   BIN\TRACE\             Trace variant: writes GLIDULAT.LOG (performance)
   BIN\DEBUG\             Debug variant: detailed log, crash handling
@@ -46,6 +48,9 @@ INSTALLATION
             then Glidulator uses all CPU cores and its JIT compiler.
   Windows:  copy BIN\GLIDE2X.DLL into the game directory (replacing the
             game's own file) and start the game with its 3Dfx option.
+            Games with a Glide 3 renderer (for example Need for Speed:
+            Porsche Unleashed) load BIN\GLIDE3X.DLL instead; put it next
+            to the game's renderer DLL the same way.
             Copy BIN\GLSMP.VXD next to it to render on several CPU cores
             (loaded only while the game runs, nothing is installed).
             Keep a game's 3dfx MiniGL (OPENGL32.DLL); it calls Glide.
@@ -59,17 +64,18 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.5
-  - Two texture units (GLIDULATOR_TMUS=2, optional): GLQuake and Half-Life
-    draw walls and lightmaps in one pass (GLQuake, Windows 98, Core
-    i7-4790: 76.6 -> 93.8 frames per second). Costs 13 MB more memory.
-  - Faster texturing, same picture: GLQuake 67.7 -> 76.1 frames per second
-    (Windows 98), Nature 104 -> 117 (DOS), Core i7-4790.
-  - The game's core draws too, and the render workers share the lines by
-    measured speed (Nature on two cores: 75 -> 98 frames per second).
-  - Up to eight render workers (before: four), DOS and Windows 9x.
-  - Faster output: DOS colour conversion, Voodoo video filter, FSAA and
-    VGA mode 13h.
+NEW IN 0.9.6
+  - Glide 3 (BIN\GLIDE3X.DLL): Need for Speed: Porsche Unleashed (75-81
+    frames per second, Windows 98, Core i7-4790), Diablo II, Slave Zero,
+    Operation Flashpoint. Can show 3dfx's Glide 3 logo (3dfxSpl3.dll).
+  - Unreal-engine games: 4 MB texture memory, two texture units by
+    default under Windows, faster texture uploads, larger texture cache.
+    Clive Barker's Undying, first level: 17 -> 42 frames per second.
+  - DOS: write-combining also under SBEMU (Redguard 35.9 -> 72 frames per
+    second), clean exit when a game quits without closing Glide, less
+    memory (two texture units: 3 MB more instead of 13 MB).
+  - Alpha buffer (Lands of Lore: Guardians of Destiny), detail and
+    multi-base textures, exact fog in the fast renderer.
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -81,6 +87,11 @@ KNOWN ISSUES
     one tester's machine. Without EMM386, or with HDPMI32i, it loads.
   - Glide functions without effect: grAA* (anti-aliased primitives),
     guMP*, guTexCreateColorMipMap. No tested title uses them.
+  - GLIDE3X.DLL: clip coordinates (grCoordinateSpace with
+    GR_CLIP_COORDS) are not supported yet; no tested game uses them.
+  - Unreal Tournament with two texture units (the Windows default) draws
+    lightmapped walls darker than with one. GLIDULATOR_TMUS=1 gives the
+    brighter picture; which one matches a real Voodoo2 is not checked yet.
   - Windows 95/98/ME: multi-core rendering (GLSMP.VXD) is tested in a
     virtual machine and on two real PCs (Intel only). If a game
     misbehaves with it, set GLIDULATOR_SMP=off or remove GLSMP.VXD.

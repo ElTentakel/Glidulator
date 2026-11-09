@@ -1058,3 +1058,36 @@ long platform_read_file(const char *name, size_t offset, void *buf, size_t len) 
     CloseHandle(h);
     return (long) done;
 }
+
+int platform_scroll_lock(void) {
+    return (GetKeyState(VK_SCROLL) & 1) ? 1 : 0;
+}
+
+int platform_run_splash_module(const char *path, uint32_t hwnd, int width, int height, int ncol, int naux,
+                               int color_format) {
+    typedef int(WINAPI * init_fn)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int);
+    typedef void(WINAPI * splash_fn)(float, float, float, float, uint32_t);
+    typedef void(WINAPI * shutdown_fn)(void);
+    HMODULE m = LoadLibraryA(path);
+    if (!m) {
+        platform_log("Splash: module not loadable\n");
+        return 0;
+    }
+    init_fn     init = (init_fn) (void (*)(void)) GetProcAddress(m, "_fxSplashInit@24");
+    splash_fn   play = (splash_fn) (void (*)(void)) GetProcAddress(m, "_fxSplash@20");
+    shutdown_fn done = (shutdown_fn) (void (*)(void)) GetProcAddress(m, "_fxSplashShutdown@0");
+    int         ok   = 0;
+    if (init && play && done) {
+        if (init(hwnd, (uint32_t) width, (uint32_t) height, (uint32_t) ncol, (uint32_t) naux, color_format)) {
+            play(0.0f, 0.0f, (float) width, (float) height, 0);
+            done();
+            ok = 1;
+        } else {
+            platform_log("Splash: fxSplashInit failed\n");
+        }
+    } else {
+        platform_log("Splash: not a 3dfx splash module (fxSplash exports missing)\n");
+    }
+    FreeLibrary(m);
+    return ok;
+}

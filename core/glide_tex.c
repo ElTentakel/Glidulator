@@ -15,6 +15,7 @@
  */
 
 #include "glide_internal.h"
+#include "glidulator/capture.h"
 #include "glidulator/trace.h"
 #include "glidulator/platform.h"
 
@@ -87,10 +88,29 @@ int g_num_tmus = 1;
 
 int glide_tmus_read_cfg(void) {
     char cfg[16];
+#ifdef GLIDULATOR_GLIDE3
+    /* glide3x.dll: Glide 3 renderers are written for the Voodoo2, two TMUs
+     * unless GLIDULATOR_TMUS=1 */
+    g_num_tmus = 2;
+    if (platform_get_config("GLIDULATOR_TMUS", cfg, sizeof cfg) && cfg[0] == '1' && !cfg[1])
+        g_num_tmus = 1;
+#else
+    /* Windows: two TMUs by default (Unreal-engine games draw see-through
+     * surfaces wrongly with one, and lightmapped games save half their
+     * triangles); DOS: one. The second costs 3 MB there (2 MB texture
+     * memory and the first piece of its texture pool, which grows by need
+     * up to 8 MB); DOS games that use it are rare. GLIDULATOR_TMUS=1|2
+     * overrides; a Rush (GLIDULATOR_BOARD=rush) always has one. */
+#    ifdef _WIN32
+    g_num_tmus = 2;
+#    else
     g_num_tmus = 1;
-    if (platform_get_config("GLIDULATOR_TMUS", cfg, sizeof cfg) && cfg[0] == '2' && !cfg[1] &&
-        !(platform_get_config("GLIDULATOR_BOARD", cfg, sizeof cfg) && (cfg[0] | 0x20) == 'r'))
-        g_num_tmus = 2;
+#    endif
+    if (platform_get_config("GLIDULATOR_TMUS", cfg, sizeof cfg) && (cfg[0] == '1' || cfg[0] == '2') && !cfg[1])
+        g_num_tmus = cfg[0] - '0';
+    if (platform_get_config("GLIDULATOR_BOARD", cfg, sizeof cfg) && (cfg[0] | 0x20) == 'r')
+        g_num_tmus = 1;
+#endif
     return g_num_tmus;
 }
 
@@ -170,22 +190,33 @@ static void tex_mem_write(int tmu, FxU32 addr, const void *src, FxU32 n) {
     if (!g_win_open || !src || !n)
         return;
 #ifdef GLIDULATOR_TRACE
-    uint64_t t0 = platform_time_us();
+    uint64_t t0 = glide_trace_cycles();
 #endif
-    const uint8_t *s = (const uint8_t *) src;
-    for (FxU32 i = 0; i < n; i++)
-        g_voodoo.tex_mem[tmu][(addr + i) & g_voodoo.texture_mask] = s[i];
-
-    FxU32 first = (addr & g_voodoo.texture_mask) >> TEX_DIRTY_SHIFT;
-    FxU32 pages = ((addr & ((1u << TEX_DIRTY_SHIFT) - 1)) + n + (1u << TEX_DIRTY_SHIFT) - 1) >> TEX_DIRTY_SHIFT;
-    FxU32 npage = (g_voodoo.texture_mask + 1) >> TEX_DIRTY_SHIFT;
-    for (FxU32 p = 0; p < pages; p++) {
-        FxU32 page = (first + p) % npage;
-        if (g_voodoo.texture_present[tmu][page])
-            flush_texture_cache(&g_voodoo, page << TEX_DIRTY_SHIFT, tmu);
+    /* at most two pieces: the texture memory wraps at texture_mask */
+    const uint8_t *s    = (const uint8_t *) src;
+    FxU32          size = g_voodoo.texture_mask + 1;
+    FxU32          left = n > size ? size : n;
+    FxU32          pos  = addr & g_voodoo.texture_mask;
+    if (n > size) { /* only the last bytes survive, as with byte-wise writes */
+        s += n - size;
+        pos = (addr + n - size) & g_voodoo.texture_mask;
+    }
+    while (left) {
+        FxU32 k = size - pos < left ? size - pos : left;
+        memcpy(&g_voodoo.tex_mem[tmu][pos], s, k);
+        s += k;
+        left -= k;
+        pos = 0;
     }
 #ifdef GLIDULATOR_TRACE
-    g_perf_tex_us += platform_time_us() - t0;
+    uint64_t t1 = glide_trace_cycles();
+    g_perf_tex_copy_cyc += t1 - t0;
+    g_perf_tex_bytes += n;
+    g_perf_tex_calls++;
+#endif
+    flush_texture_range(&g_voodoo, addr, n > size ? size : n, tmu);
+#ifdef GLIDULATOR_TRACE
+    g_perf_tex_flush_cyc += glide_trace_cycles() - t1;
 #endif
 }
 
@@ -199,6 +230,7 @@ static int level_selected(GrLOD_t lod, FxU32 even_odd) {
 
 void GR_EXPORT GLIDE_API grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
     GLIDE_TRACE("grTexDownloadMipMap");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_DOWNLOAD_MIPMAP, tmu, startAddress, evenOdd, info ? (uint32_t) info->smallLod : 0, info ? (uint32_t) info->largeLod : 0, info ? (uint32_t) info->aspectRatio : 0, info ? (uint32_t) info->format : 0);
     if (!tmu_ok(tmu) || !info || !info->data)
         return;
     if (!tex_params_valid(info->smallLod, info->largeLod, info->aspectRatio, info->format))
@@ -230,6 +262,7 @@ void GR_EXPORT GLIDE_API grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAdd
                                                   GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd,
                                                   void *data) {
     GLIDE_TRACE("grTexDownloadMipMapLevel");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_DOWNLOAD_LEVEL, tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd);
     if (!tmu_ok(tmu) || !tex_params_valid(thisLod, largeLod, aspectRatio, format) || !level_selected(thisLod, evenOdd))
         return;
     FxU32 offset = level_offset(largeLod, thisLod, aspectRatio, format, evenOdd);
@@ -243,6 +276,7 @@ void GR_EXPORT GLIDE_API grTexDownloadMipMapLevelPartial(GrChipID_t tmu, FxU32 s
                                                          GrTextureFormat_t format, FxU32 evenOdd, void *data, int start,
                                                          int end) {
     GLIDE_TRACE("grTexDownloadMipMapLevelPartial");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_DOWNLOAD_PARTIAL, tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd, (uint32_t) start | (uint32_t) end << 16);
     if (!tmu_ok(tmu) || !tex_params_valid(thisLod, largeLod, aspectRatio, format) || !level_selected(thisLod, evenOdd))
         return;
     FxU32 w, h;
@@ -254,15 +288,22 @@ void GR_EXPORT GLIDE_API grTexDownloadMipMapLevelPartial(GrChipID_t tmu, FxU32 s
     tex_mem_write(tmu, startAddress + offset, data, (FxU32) (end - start + 1) * row);
 }
 
-/* Palette for GR_TEXFMT_P_8/AP_88: 256 entries 0x00RRGGBB. */
-static void palette_write(int tmu, const FxU32 *entries, int start, int end) {
+/* Palette for GR_TEXFMT_P_8/AP_88: 256 entries 0x00RRGGBB. Written to
+ * every TMU, whichever one the call names: 3dfx's Glide broadcasts palette
+ * downloads (the tmu argument only selects the NCC tables). Unreal
+ * Tournament relies on it with two TMUs: it loads a palette through TMU1
+ * and then draws a P8 texture of the same palette on TMU0 without loading
+ * it again (otherwise: white sky, speckled facades in the city intro). */
+static void palette_write(const FxU32 *entries, int start, int end) {
     if (start < 0)
         start = 0;
     if (end > 255)
         end = 255;
-    for (int i = start; i <= end; i++)
-        g_voodoo.palette[tmu][i].u = entries[i] | 0xff000000u;
-    g_voodoo.palette_dirty[tmu] = 1;
+    for (int t = 0; t < g_num_tmus; t++) {
+        for (int i = start; i <= end; i++)
+            g_voodoo.palette[t][i].u = entries[i] | 0xff000000u;
+        g_voodoo.palette_dirty[t] = 1;
+    }
 }
 
 /* NCC table for the YIQ formats (GR_TEXFMT_YIQ_422/AYIQ_8422): the 12
@@ -291,19 +332,28 @@ static void ncc_write(int tmu, GrTexTable_t type, const GuNccTable *ncc, int sta
 static void table_write(GrChipID_t tmu, GrTexTable_t type, void *data, int start, int end) {
     if (!tmu_ok(tmu) || !data)
         return;
-    if (type == GR_TEXTABLE_PALETTE)
-        palette_write(tmu, ((const GuTexPalette *) data)->data, start, end);
+#ifdef GLIDULATOR_TRACE
+    g_perf_tex_tables++;
+#endif
+    if (type == GR_TEXTABLE_PALETTE) {
+        palette_write(((const GuTexPalette *) data)->data, start, end);
+#ifdef GLIDULATOR_DEBUG
+        glide_capture_palette(tmu);
+#endif
+    }
     else if (type == GR_TEXTABLE_NCC0 || type == GR_TEXTABLE_NCC1)
         ncc_write(tmu, type, (const GuNccTable *) data, start, end);
 }
 
 void GR_EXPORT GLIDE_API grTexDownloadTable(GrChipID_t tmu, GrTexTable_t type, void *data) {
     GLIDE_TRACE("grTexDownloadTable");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_DOWNLOAD_TABLE, tmu, type, 0, type == GR_TEXTABLE_PALETTE ? 255u : 11u);
     table_write(tmu, type, data, 0, type == GR_TEXTABLE_PALETTE ? 255 : 11);
 }
 
 void GR_EXPORT GLIDE_API grTexDownloadTablePartial(GrChipID_t tmu, GrTexTable_t type, void *data, int start, int end) {
     GLIDE_TRACE("grTexDownloadTablePartial");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_DOWNLOAD_TABLE, tmu, type, (uint32_t) start, (uint32_t) end);
     table_write(tmu, type, data, start, end);
 }
 
@@ -374,7 +424,8 @@ static void tex_recalc(int tmu) {
     if (!g_src_valid[tmu])
         return;
     const GrTexInfo *src  = &g_src[tmu];
-    uint32_t         tlod = g_voodoo.params.tLOD[tmu] & (0x3fu << 12); /* keep the LOD bias */
+    /* keep the LOD bias and grTexMultibase */
+    uint32_t         tlod = g_voodoo.params.tLOD[tmu] & ((0x3fu << 12) | LOD_TMULTIBASEADDR);
     GrLOD_t          max  = (g_sw.mipmap_mode[tmu] == GR_MIPMAP_DISABLE) ? src->largeLod : src->smallLod;
     tlod |= TLOD_MIN(src->largeLod) | TLOD_MAX(max);
     if (src->aspectRatio < GR_ASPECT_1x1)
@@ -427,6 +478,7 @@ void glide_tex_set_source(int tmu, const GrTexInfo *info, int valid, FxU32 even_
 
 void GR_EXPORT GLIDE_API grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
     GLIDE_TRACE("grTexSource");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_SOURCE, tmu, startAddress, evenOdd, info ? (uint32_t) info->smallLod : 0, info ? (uint32_t) info->largeLod : 0, info ? (uint32_t) info->aspectRatio : 0, info ? (uint32_t) info->format : 0);
     if (!tmu_ok(tmu) || !info || !tex_params_valid(info->smallLod, info->largeLod, info->aspectRatio, info->format))
         return;
 #ifdef GLIDULATOR_DEBUG
@@ -450,6 +502,7 @@ void GR_EXPORT GLIDE_API grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 e
 void GR_EXPORT GLIDE_API grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minfilter_mode,
                                          GrTextureFilterMode_t magfilter_mode) {
     GLIDE_TRACE("grTexFilterMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_FILTER, tmu, minfilter_mode, magfilter_mode);
     if (!tmu_ok(tmu))
         return;
     uint32_t tm = g_voodoo.params.textureMode[tmu] & ~(TM_MINFILTER | TM_MAGFILTER);
@@ -463,6 +516,7 @@ void GR_EXPORT GLIDE_API grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t m
 void GR_EXPORT GLIDE_API grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clampmode,
                                         GrTextureClampMode_t t_clampmode) {
     GLIDE_TRACE("grTexClampMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_CLAMP, tmu, s_clampmode, t_clampmode);
     if (!tmu_ok(tmu))
         return;
     uint32_t tm = g_voodoo.params.textureMode[tmu] & ~(uint32_t) (TEXTUREMODE_TCLAMPS | TEXTUREMODE_TCLAMPT);
@@ -476,6 +530,7 @@ void GR_EXPORT GLIDE_API grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_c
 /* lodBlend (trilinear) only with two TMUs, see tex_recalc(). */
 void GR_EXPORT GLIDE_API grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend) {
     GLIDE_TRACE("grTexMipMapMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_MIPMAP_MODE, tmu, mode, lodBlend);
     if (!tmu_ok(tmu))
         return;
     g_sw.mipmap_mode[tmu] = mode;
@@ -508,6 +563,11 @@ void glide_tex_reset(void) {
         g_voodoo.params.textureMode[t] = 0;
         g_voodoo.params.tLOD[t]        = 0;
         g_voodoo.params.texBaseAddr[t] = 0;
+        if (t < 2) {
+            g_voodoo.params.texBaseAddr1[t]  = 0;
+            g_voodoo.params.texBaseAddr2[t]  = 0;
+            g_voodoo.params.texBaseAddr38[t] = 0;
+        }
     }
     for (int t = 0; t < g_num_tmus; t++) {
         grTexCombine(t, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL,
@@ -516,4 +576,70 @@ void glide_tex_reset(void) {
         grTexClampMode(t, GR_TEXTURECLAMP_WRAP, GR_TEXTURECLAMP_WRAP);
     }
     g_voodoo.bilinear_enabled = 1;
+}
+
+/* --- Multibase: separate base addresses for LOD 256, 128, 64 and 32..1 --
+
+   As in 3dfx's Glide: grTexMultibase sets tLOD bit 24, and
+   grTexMultibaseAddress sets texBaseAddr / _1 / _2 / _3_8 to the base at
+   which the range's first level lies at startAddress (the same
+   computation as grTexSource, with the range's level as the large LOD).
+   The rasterizer (voodoo_recalc_tex12) then switches the base per level
+   and keeps adding the full-chain offset, like the board. */
+
+void GR_EXPORT GLIDE_API grTexMultibase(GrChipID_t tmu, FxBool enable) {
+    GLIDE_TRACE("grTexMultibase");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_MULTIBASE, tmu, enable);
+    if (!tmu_ok(tmu))
+        return;
+    if (enable)
+        g_voodoo.params.tLOD[tmu] |= LOD_TMULTIBASEADDR;
+    else
+        g_voodoo.params.tLOD[tmu] &= ~(uint32_t) LOD_TMULTIBASEADDR;
+    if (g_src_valid[tmu])
+        voodoo_recalc_tex12(&g_voodoo, tmu);
+}
+
+void GR_EXPORT GLIDE_API grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress,
+                                               FxU32 evenOdd, GrTexInfo *info) {
+    GLIDE_TRACE("grTexMultibaseAddress");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_MULTIBASE_ADDR, tmu, range, startAddress, evenOdd);
+    if (!tmu_ok(tmu) || !info || !tex_params_valid(info->smallLod, info->largeLod, info->aspectRatio, info->format))
+        return;
+    switch (range) {
+    case GR_TEXBASE_256:
+        g_voodoo.params.texBaseAddr[tmu] = base_address(startAddress, GR_LOD_256, info->aspectRatio, info->format, evenOdd);
+        break;
+    case GR_TEXBASE_128:
+        g_voodoo.params.texBaseAddr1[tmu] = base_address(startAddress, GR_LOD_128, info->aspectRatio, info->format, evenOdd);
+        break;
+    case GR_TEXBASE_64:
+        g_voodoo.params.texBaseAddr2[tmu] = base_address(startAddress, GR_LOD_64, info->aspectRatio, info->format, evenOdd);
+        break;
+    case GR_TEXBASE_32_TO_1:
+        g_voodoo.params.texBaseAddr38[tmu] = base_address(startAddress, GR_LOD_32, info->aspectRatio, info->format, evenOdd);
+        break;
+    default: return;
+    }
+    if (g_src_valid[tmu])
+        voodoo_recalc_tex12(&g_voodoo, tmu);
+}
+
+/* Detail texture factor per TMU (tDetail), as 3dfx's Glide: detail_max x 255
+ * (8.0), lod_bias as signed 6.0, detail_scale 3.0. The rasterizer blends
+ * with clamp(0, max, (bias - LOD) << scale) for GR_COMBINE_FACTOR_DETAIL. */
+void GR_EXPORT GLIDE_API grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
+    GLIDE_TRACE("grTexDetailControl");
+    if (!tmu_ok(tmu) || tmu > 1)
+        return;
+    if (detail_max < 0.0f)
+        detail_max = 0.0f;
+    else if (detail_max > 1.0f)
+        detail_max = 1.0f;
+    int bias = lod_bias & 0x3f;
+    if (bias & 0x20)
+        bias -= 0x40; /* signed 6 bit, like the register */
+    g_voodoo.params.detail_max[tmu]   = (int) (detail_max * 255.0f);
+    g_voodoo.params.detail_bias[tmu]  = bias;
+    g_voodoo.params.detail_scale[tmu] = detail_scale & 7;
 }

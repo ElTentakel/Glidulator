@@ -198,5 +198,7 @@ const vid_mode *vid_current(void);
 /* The real DPMI hardware layer (video_dpmi.c, Watcom only). NULL if no DOS
  * memory for the VBE structures could be obtained. */
 const vid_bios *vid_dpmi_bios(void);
+/* Linear address of the last DPMI mapping of phys (0 = none; video_dpmi.c) */
+uint32_t vid_dpmi_mapped_lin(uint32_t phys);
 
 #endif /* GLIDULATOR_VIDEO_H */

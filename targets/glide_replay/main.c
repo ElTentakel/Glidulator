@@ -143,6 +143,16 @@ static void apply_regs(const glide_capture_cmd *c, int point) {
     g_voodoo.params.chromaKey_g    = (int) ((c->reg[CAP_CHROMAKEY] >> 8) & 0xff);
     g_voodoo.params.chromaKey_b    = (int) (c->reg[CAP_CHROMAKEY] & 0xff);
     g_sw.stw_hint                  = c->reg[CAP_STW_HINT];
+    for (int t = 0; t < 2; t++) { /* version 3 (0 in older recordings) */
+        uint32_t d                      = c->reg[CAP_DETAIL0 + t];
+        int      bias                   = (int) ((d >> 8) & 0x3f);
+        g_voodoo.params.detail_max[t]   = (int) (d & 0xff);
+        g_voodoo.params.detail_bias[t]  = (bias & 0x20) ? bias - 0x40 : bias;
+        g_voodoo.params.detail_scale[t] = (int) ((d >> 14) & 7);
+        g_voodoo.params.texBaseAddr1[t]  = c->reg[CAP_TEXBASE1_0 + 3 * t];
+        g_voodoo.params.texBaseAddr2[t]  = c->reg[CAP_TEXBASE2_0 + 3 * t];
+        g_voodoo.params.texBaseAddr38[t] = c->reg[CAP_TEXBASE38_0 + 3 * t];
+    }
     voodoo_recalc_tex12(&g_voodoo, 0);
     if (g_voodoo.dual_tmus) {
         g_voodoo.params.textureMode[1] = c->reg[CAP_TEXTUREMODE1];
@@ -164,9 +174,9 @@ static int load_frame_tables(const char *dir, const char *nn, int tmu) {
     uint8_t *t2 = read_all(path, &n_t);
     snprintf(path, sizeof path, "%s/%s%s.BIN", dir, tmu ? "TB1" : "TAB", nn);
     glide_capture_tables *tb = read_all(path, &n_b);
-    int ok = t2 && tb && n_t == TEX_MEM_BYTES && n_b == sizeof *tb;
+    int ok = t2 && tb && n_t == g_voodoo.texture_mask + 1 && n_b == sizeof *tb;
     if (ok) {
-        memcpy(g_voodoo.tex_mem[tmu], t2, TEX_MEM_BYTES);
+        memcpy(g_voodoo.tex_mem[tmu], t2, n_t);
         for (int i = 0; i < 256; i++)
             g_voodoo.palette[tmu][i].u = tb->palette[i];
         g_voodoo.palette_dirty[tmu] = 1;
@@ -208,18 +218,61 @@ static void list_triangle(int idx, const glide_capture_cmd *c) {
            idx, (c->reg[CAP_FBZCOLORPATH] & (1u << 27)) ? "ja " : "nein", c->reg[CAP_TEXBASEADDR], large,
            (int) ((c->reg[CAP_TLOD] >> 8) & 0xf), (c->reg[CAP_TEXTUREMODE] >> 8) & 0xf, xmin, ymin, xmax, ymax, smin,
            smax, tmin, tmax, c->v[0].oow, c->v[1].oow, c->v[2].oow);
+    if (c->reg[CAP_NUM_TMUS] > 1)
+        printf("      tmu1 base=%08x lod=%d..%d fmt=%x textureMode0=%08x textureMode1=%08x\n", c->reg[CAP_TEXBASEADDR1],
+               (int) ((c->reg[CAP_TLOD1] >> 2) & 0xf), (int) ((c->reg[CAP_TLOD1] >> 8) & 0xf),
+               (c->reg[CAP_TEXTUREMODE1] >> 8) & 0xf, c->reg[CAP_TEXTUREMODE], c->reg[CAP_TEXTUREMODE1]);
     /* Colour/alpha of the first corner and the combine/blend registers. */
     printf("      rgba=%.0f/%.0f/%.0f/%.0f  fbzColorPath=%08x alphaMode=%08x fbzMode=%08x fogMode=%08x color0=%08x\n",
            c->v[0].r, c->v[0].g, c->v[0].b, c->v[0].a, c->reg[CAP_FBZCOLORPATH], c->reg[CAP_ALPHAMODE],
            c->reg[CAP_FBZMODE], c->reg[CAP_FOGMODE], c->reg[CAP_COLOR0]);
+    if (c->reg[CAP_FBZMODE] & 2) /* FBZ_CHROMAKEY */
+        printf("      chromaKey=%06x\n", c->reg[CAP_CHROMAKEY] & 0xffffff);
+}
+
+/* Call records (GLIDE_CAPTURE_CALL, v4) are taken out of the command
+ * list on load: g_calls in recorded order, g_call_end[i] = number of
+ * calls recorded before drawing command i. Only --list prints them. */
+static glide_capture_cmd *g_calls;
+static uint32_t           g_ncalls;
+static uint32_t          *g_call_end;
+
+/* PALnn.BIN: palettes downloaded during the frame (GLIDE_CALL_PALETTE) */
+static uint32_t *g_pals;
+static size_t    g_npals;
+
+/* Runs the call records before the next drawing command: palette downloads
+ * take effect in recorded order (P8 games load one per texture); with list
+ * every call is printed. */
+static void run_calls(uint32_t *next, uint32_t end, int list) {
+    for (; *next < end; (*next)++) {
+        const glide_capture_cmd *c = &g_calls[*next];
+        uint32_t                 n = c->reg[1];
+        if (c->reg[0] == GLIDE_CALL_PALETTE && c->reg[3] < g_npals) {
+            /* palette downloads reach every TMU (core/glide_tex.c) */
+            for (int tmu = 0; tmu < 2; tmu++) {
+                for (int i = 0; i < 256; i++)
+                    g_voodoo.palette[tmu][i].u = g_pals[(size_t) c->reg[3] * 256 + i];
+                g_voodoo.palette_dirty[tmu] = 1;
+            }
+        }
+        if (!list)
+            continue;
+        printf("     > %s(", glide_capture_call_name(c->reg[0]));
+        for (uint32_t k = 0; k < n && k < CAP_NREGS - 2; k++)
+            printf(k ? ", %#x" : "%#x", c->reg[2 + k]);
+        printf(")\n");
+    }
 }
 
 /* Play all commands of the frame; returns the number of triangles. */
 static int render_frame(const glide_capture_header *h, const glide_capture_cmd *cmds, int list, int only, int upto,
                         int point) {
-    int tri = 0;
+    int      tri       = 0;
+    uint32_t next_call = 0;
     for (uint32_t i = 0; i < h->ncmd; i++) {
         const glide_capture_cmd *c = &cmds[i];
+        run_calls(&next_call, g_call_end[i], list);
         apply_regs(c, point);
         if (c->kind == GLIDE_CAPTURE_CLEAR) {
             grClipWindow(0, 0, h->width, h->height);
@@ -234,7 +287,156 @@ static int render_frame(const glide_capture_header *h, const glide_capture_cmd *
         }
         tri++;
     }
+    run_calls(&next_call, g_ncalls, list);
     return tri;
+}
+
+/* --texstats: texture cache behaviour of the frame. Every triangle's
+ * sampled textures as the cache sees them (key = base address, tLOD
+ * layout bits, palette/NCC checksum; size = decoded chain in 32 bit).
+ * The frame is played twice in the simulation, the second pass stands for
+ * the next, similar frame: its misses estimate the steady state. */
+typedef struct { uint32_t base, lod, pal, bytes; } tex_use;
+
+static uint32_t pal_sum(int tmu) {
+    uint32_t s = 0;
+    for (int i = 0; i < 256; i++)
+        s ^= g_voodoo.palette[tmu][i].u;
+    return s;
+}
+
+/* round robin over n fixed slots (today's cache) or LRU with a byte budget
+ * (budget > 0); returns misses of the second pass, *bytes_out = their
+ * decoded bytes */
+static int sim_cache(const tex_use *u, int nu, int nslots, uint64_t budget, uint64_t *bytes_out) {
+    tex_use *slot = calloc((size_t) nslots, sizeof *slot);
+    uint64_t *age = calloc((size_t) nslots, sizeof *age), clock = 0, used = 0;
+    int       rr = 0, misses = 0;
+    *bytes_out = 0;
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < nu; i++) {
+            clock++;
+            int hit = -1;
+            for (int s = 0; s < nslots; s++)
+                if (slot[s].bytes && slot[s].base == u[i].base && slot[s].lod == u[i].lod && slot[s].pal == u[i].pal) {
+                    hit = s;
+                    break;
+                }
+            if (hit >= 0) {
+                age[hit] = clock;
+                continue;
+            }
+            if (pass) {
+                misses++;
+                *bytes_out += u[i].bytes;
+            }
+            int s;
+            if (!budget) {
+                s  = rr;
+                rr = (rr + 1) % nslots;
+            } else {
+                /* LRU: free the oldest until the new texture fits and a slot is free */
+                for (;;) {
+                    int free_slot = -1, oldest = -1;
+                    for (int k = 0; k < nslots; k++) {
+                        if (!slot[k].bytes) {
+                            if (free_slot < 0)
+                                free_slot = k;
+                        } else if (oldest < 0 || age[k] < age[oldest])
+                            oldest = k;
+                    }
+                    if (free_slot >= 0 && used + u[i].bytes <= budget) {
+                        s = free_slot;
+                        break;
+                    }
+                    if (oldest < 0) {
+                        s = free_slot;
+                        break;
+                    }
+                    used -= slot[oldest].bytes;
+                    slot[oldest].bytes = 0;
+                }
+            }
+            if (!budget && slot[s].bytes)
+                used -= slot[s].bytes;
+            slot[s] = u[i];
+            age[s]  = clock;
+            used += u[i].bytes;
+        }
+    free(slot);
+    free(age);
+    return misses;
+}
+
+static void tex_stats(const glide_capture_header *h, const glide_capture_cmd *cmds) {
+    tex_use *u  = malloc(sizeof *u * (size_t) h->ncmd * 2 + 1);
+    int      nu = 0;
+    uint32_t next_call = 0;
+    for (uint32_t i = 0; i < h->ncmd; i++) {
+        const glide_capture_cmd *c = &cmds[i];
+        run_calls(&next_call, g_call_end[i], 0);
+        apply_regs(c, 0);
+        if (c->kind != GLIDE_CAPTURE_TRIANGLE || !(c->reg[CAP_FBZCOLORPATH] & FBZCP_TEXTURE_ENABLED))
+            continue;
+        int both = g_voodoo.dual_tmus && (c->reg[CAP_TEXTUREMODE] & TEXTUREMODE_LOCAL_MASK) != TEXTUREMODE_LOCAL;
+        for (int t = 0; t <= both; t++) {
+            int      fmt = g_voodoo.params.tformat[t];
+            int      lmin = (int) ((g_voodoo.params.tLOD[t] >> 2) & 15), lmax = (int) ((g_voodoo.params.tLOD[t] >> 8) & 15);
+            uint32_t bytes = 0;
+            if (lmax > 8)
+                lmax = 8;
+            for (int l = lmin; l <= lmax; l++)
+                bytes += (g_voodoo.params.tex_w_mask[t][l] + 1) * (g_voodoo.params.tex_h_mask[t][l] + 1) * 4;
+            tex_use x;
+            x.base  = g_voodoo.params.texBaseAddr[t];
+            x.lod   = (g_voodoo.params.tLOD[t] & 0xfc0fff) | (uint32_t) t << 31;
+            x.pal   = (fmt == TEX_PAL8 || fmt == TEX_APAL8 || fmt == TEX_APAL88) ? pal_sum(t) : 0;
+            x.bytes = bytes;
+            u[nu++] = x;
+        }
+    }
+    /* distinct textures and their decoded size */
+    int      distinct = 0;
+    uint64_t total    = 0;
+    for (int i = 0; i < nu; i++) {
+        int seen = 0;
+        for (int j = 0; j < i && !seen; j++)
+            seen = u[j].base == u[i].base && u[j].lod == u[i].lod && u[j].pal == u[i].pal;
+        if (!seen) {
+            distinct++;
+            total += u[i].bytes;
+        }
+    }
+    printf("texstats: %d texture uses, %d distinct, %.1f MB decoded\n", nu, distinct, total / 1048576.0);
+    /* distinct textures by decoded size class (KB, power of two) */
+    int hist[20] = { 0 };
+    for (int i = 0; i < nu; i++) {
+        int seen = 0;
+        for (int j = 0; j < i && !seen; j++)
+            seen = u[j].base == u[i].base && u[j].lod == u[i].lod && u[j].pal == u[i].pal;
+        if (seen)
+            continue;
+        int k = 0;
+        while ((1u << (k + 10)) < u[i].bytes && k < 19)
+            k++;
+        hist[k]++;
+    }
+    printf("  sizes:");
+    for (int k = 0; k < 20; k++)
+        if (hist[k])
+            printf(" <=%uKB:%d", 1u << k, hist[k]);
+    printf("\n");
+    uint64_t b;
+    int      m = sim_cache(u, nu, 32, 0, &b);
+    printf("  today, 32 slots round robin: %d misses/frame, %.1f MB decoded\n", m, b / 1048576.0);
+    static const int      slots[]  = { 64, 256, 1024, 4096 };
+    static const unsigned mbs[]    = { 8, 16, 32, 64 };
+    for (int k = 0; k < 4; k++)
+        for (int j = 0; j < 4; j++) {
+            m = sim_cache(u, nu, slots[k], (uint64_t) mbs[j] << 20, &b);
+            printf("  LRU %4d slots, %2u MB: %4d misses/frame, %.2f MB decoded\n", slots[k], mbs[j], m, b / 1048576.0);
+        }
+    free(u);
 }
 
 /* --difftri: C against JIT per triangle (toggles use_recompiler directly:
@@ -250,8 +452,10 @@ static int diff_triangles(const glide_capture_header *h, const glide_capture_cmd
         return 1;
     }
     memcpy(g_voodoo.fb_mem, start, fb_bytes);
+    uint32_t next_call = 0;
     for (uint32_t i = 0; i < h->ncmd; i++) {
         const glide_capture_cmd *c = &cmds[i];
+        run_calls(&next_call, g_call_end[i], 0);
         apply_regs(c, point);
         if (c->kind == GLIDE_CAPTURE_CLEAR) {
             grClipWindow(0, 0, h->width, h->height);
@@ -349,7 +553,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s <dir> <CAPnn.BIN> <out.png> [--list] [--only N] [--upto N] [--point] [--renderer R] [--threads N] [--compare] [--bench N]\n", argv[0]);
         return 1;
     }
-    int list = 0, only = -1, upto = -1, point = 0, compare = 0, bench = 0, difftri = 0;
+    int list = 0, only = -1, upto = -1, point = 0, compare = 0, bench = 0, difftri = 0, texstats = 0;
     int kind = GLIDE_RENDERER_AUTO, threads = 0;
     for (int i = 4; i < argc; i++) {
         if (!strcmp(argv[i], "--list"))
@@ -372,6 +576,8 @@ int main(int argc, char **argv) {
             compare = 1;
         else if (!strcmp(argv[i], "--difftri"))
             difftri = 1;
+        else if (!strcmp(argv[i], "--texstats"))
+            texstats = 1;
         else if (!strcmp(argv[i], "--bench") && i + 1 < argc)
             bench = atoi(argv[++i]);
     }
@@ -384,33 +590,56 @@ int main(int argc, char **argv) {
     uint32_t *pal = read_all(path, &n_pal);
     snprintf(path, sizeof path, "%s/%s", argv[1], argv[2]);
     uint8_t *cap = read_all(path, &n_cap);
-    if (!tex || !pal || !cap || n_tex != TEX_MEM_BYTES || n_cap < sizeof(glide_capture_header)) {
+    if (!tex || !pal || !cap || n_cap < sizeof(glide_capture_header)) {
         fprintf(stderr, "capture incomplete in %s\n", argv[1]);
         return 1;
     }
-    const glide_capture_header *h = (const glide_capture_header *) cap;
-    if (h->magic != GLIDE_CAPTURE_MAGIC || (h->version != 1 && h->version != GLIDE_CAPTURE_VERSION)) {
-        fprintf(stderr, "no valid GCAP v1/v%u\n", GLIDE_CAPTURE_VERSION);
+    /* The recording's texture memory size (2 MB: DOS and Windows DLLs before
+     * 4 MB, 4 MB: Windows): power of two up to TEX_MEM_BYTES, used as the
+     * address mask so wrapped addresses resolve as on the recording side. */
+    if (n_tex > TEX_MEM_BYTES || n_tex < 65536 || (n_tex & (n_tex - 1))) {
+        fprintf(stderr, "TEXMEM.BIN: unexpected size %zu (max %u)\n", n_tex, (unsigned) TEX_MEM_BYTES);
         return 1;
     }
-    /* Version 1: CAP_NREGS_V1 registers per command; widened here, the
-     * TMU1 registers stay 0 (one TMU) */
-    size_t nregs = h->version == 1 ? CAP_NREGS_V1 : CAP_NREGS;
+    const glide_capture_header *h = (const glide_capture_header *) cap;
+    if (h->magic != GLIDE_CAPTURE_MAGIC || h->version < 1 || h->version > GLIDE_CAPTURE_VERSION) {
+        fprintf(stderr, "no valid GCAP v1..v%u\n", GLIDE_CAPTURE_VERSION);
+        return 1;
+    }
+    /* Older versions have fewer registers per command; widened here, the
+     * missing ones stay 0 (v1: one TMU; v2: no detail/multibase) */
+    size_t nregs = h->version == 1 ? CAP_NREGS_V1 : h->version == 2 ? CAP_NREGS_V2 : CAP_NREGS;
     size_t step  = sizeof(uint32_t) * (1 + nregs) + sizeof(GrVertex) * 3;
     if (n_cap < sizeof *h + h->ncmd * step) {
         fprintf(stderr, "capture truncated\n");
         return 1;
     }
     glide_capture_cmd *cmds = calloc(h->ncmd ? h->ncmd : 1, sizeof *cmds);
-    int                tmus = 1;
+    g_calls                 = calloc(h->ncmd ? h->ncmd : 1, sizeof *g_calls);
+    g_call_end              = calloc(h->ncmd ? h->ncmd : 1, sizeof *g_call_end);
+    int      tmus           = 1;
+    uint32_t ndraw          = 0;
     for (uint32_t i = 0; i < h->ncmd; i++) {
-        const uint8_t *src = cap + sizeof *h + i * step;
-        memcpy(&cmds[i].kind, src, sizeof(uint32_t));
-        memcpy(cmds[i].reg, src + sizeof(uint32_t), sizeof(uint32_t) * nregs);
-        memcpy(cmds[i].v, src + sizeof(uint32_t) * (1 + nregs), sizeof cmds[i].v);
-        if (cmds[i].reg[CAP_NUM_TMUS] > 1)
+        const uint8_t     *src = cap + sizeof *h + i * step;
+        glide_capture_cmd *d   = &cmds[ndraw];
+        memcpy(&d->kind, src, sizeof(uint32_t));
+        memcpy(d->reg, src + sizeof(uint32_t), sizeof(uint32_t) * nregs);
+        memcpy(d->v, src + sizeof(uint32_t) * (1 + nregs), sizeof d->v);
+        if (d->kind == GLIDE_CAPTURE_CALL) {
+            g_calls[g_ncalls++] = *d;
+            continue;
+        }
+        if (d->reg[CAP_NUM_TMUS] > 1)
             tmus = 2;
+        g_call_end[ndraw++] = g_ncalls;
     }
+    /* from here on h->ncmd counts drawing commands (triangles, clears) only */
+    static glide_capture_header hdr;
+    hdr      = *h;
+    hdr.ncmd = ndraw;
+    h        = &hdr;
+    if (g_ncalls)
+        printf("%u call records\n", (unsigned) g_ncalls);
     /* the board reports as many TMUs as the recording had */
     if (tmus > 1)
         setenv("GLIDULATOR_TMUS", "2", 1);
@@ -422,7 +651,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "grSstWinOpen(%ux%u) failed\n", h->width, h->height);
         return 1;
     }
-    memcpy(g_voodoo.tex_mem[0], tex, TEX_MEM_BYTES);
+    g_voodoo.texture_mask = (uint32_t) n_tex - 1;
+    memcpy(g_voodoo.tex_mem[0], tex, n_tex);
     for (int i = 0; i < 256; i++)
         g_voodoo.palette[0][i].u = pal[i];
     g_voodoo.palette_dirty[0] = 1;
@@ -432,6 +662,12 @@ int main(int argc, char **argv) {
      * written at the first recorded frame. TMU1: TX1nn.BIN/TB1nn.BIN. */
     if (strlen(argv[2]) >= 5 && !strncmp(argv[2], "CAP", 3)) {
         char nn[3] = { argv[2][3], argv[2][4], 0 };
+        snprintf(path, sizeof path, "%s/PAL%s.BIN", argv[1], nn);
+        size_t n_pals = 0;
+        g_pals        = read_all(path, &n_pals);
+        g_npals       = g_pals ? n_pals / (256 * sizeof(uint32_t)) : 0;
+        if (g_npals)
+            printf("%zu palette downloads: PAL%s.BIN\n", g_npals, nn);
         if (load_frame_tables(argv[1], nn, 0))
             printf("texture memory/tables for the frame: TEX%s.BIN, TAB%s.BIN\n", nn, nn);
         if (g_voodoo.dual_tmus && load_frame_tables(argv[1], nn, 1))
@@ -445,6 +681,11 @@ int main(int argc, char **argv) {
     uint8_t *ref      = malloc(fb_bytes);
     memcpy(start, g_voodoo.fb_mem, fb_bytes);
 
+    if (texstats) {
+        tex_stats(h, cmds);
+        grGlideShutdown();
+        return 0;
+    }
     if (difftri) {
         int r = diff_triangles(h, cmds, start, fb_bytes, point);
         grGlideShutdown();

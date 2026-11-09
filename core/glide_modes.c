@@ -12,6 +12,7 @@
  */
 
 #include "glide_internal.h"
+#include "glidulator/capture.h"
 #include "glidulator/trace.h"
 
 #include <math.h>
@@ -131,6 +132,7 @@ static uint32_t other_select(GrCombineOther_t other) {
 void GR_EXPORT GLIDE_API grColorCombine(GrCombineFunction_t function, GrCombineFactor_t factor,
                                         GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
     GLIDE_TRACE("grColorCombine");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_COLOR_COMBINE, function, factor, local, other, invert);
     uint32_t cp = g_voodoo.params.fbzColorPath;
     cp &= ~((CMB_MASK << CP_COLOR_SHIFT) | FBZCP_RGB_SEL_MASK | FBZCP_CC_LOCAL);
     cp |= combine_bits(function, factor, invert) << CP_COLOR_SHIFT;
@@ -144,6 +146,7 @@ void GR_EXPORT GLIDE_API grColorCombine(GrCombineFunction_t function, GrCombineF
 void GR_EXPORT GLIDE_API grAlphaCombine(GrCombineFunction_t function, GrCombineFactor_t factor,
                                         GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
     GLIDE_TRACE("grAlphaCombine");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_ALPHA_COMBINE, function, factor, local, other, invert);
     uint32_t cp = g_voodoo.params.fbzColorPath;
     cp &= ~((CMB_MASK << CP_ALPHA_SHIFT) | FBZCP_A_SEL_MASK | FBZCP_CCA_LOCAL_MASK);
     cp |= combine_bits(function, factor, invert) << CP_ALPHA_SHIFT;
@@ -164,6 +167,7 @@ void GR_EXPORT GLIDE_API grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgb_fu
                                       GrCombineFunction_t alpha_function, GrCombineFactor_t alpha_factor,
                                       FxBool rgb_invert, FxBool alpha_invert) {
     GLIDE_TRACE("grTexCombine");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_TEX_COMBINE, tmu, rgb_function, rgb_factor, alpha_function, alpha_factor, rgb_invert, alpha_invert);
     if (tmu < GR_TMU0 || tmu >= g_num_tmus)
         return;
     uint32_t tm = g_voodoo.params.textureMode[tmu];
@@ -192,6 +196,7 @@ int glide_tmu_uses_local(uint32_t texture_mode) {
  * (local constant) and color1 (GR_COMBINE_OTHER_CONSTANT). */
 void GR_EXPORT GLIDE_API grConstantColorValue(GrColor_t value) {
     GLIDE_TRACE("grConstantColorValue");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_CONSTANT_COLOR, value);
     uint32_t argb                 = glide_color_to_argb(value);
     g_voodoo.params.color0        = argb;
     g_voodoo.params.color1        = argb;
@@ -212,6 +217,7 @@ void GR_EXPORT GLIDE_API grConstantColorValue4(float a, float r, float g, float 
  * iterated colour and color0 as "local". */
 void GR_EXPORT GLIDE_API grAlphaControlsITRGBLighting(FxBool enable) {
     GLIDE_TRACE("grAlphaControlsITRGBLighting");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_ALPHA_ITRGB, enable);
     if (enable)
         g_voodoo.params.fbzColorPath |= FBZCP_CC_LOCAL_OVR;
     else
@@ -227,6 +233,7 @@ void GR_EXPORT GLIDE_API grAlphaControlsITRGBLighting(FxBool enable) {
 void GR_EXPORT GLIDE_API grAlphaBlendFunction(GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df,
                                               GrAlphaBlendFnc_t alpha_sf, GrAlphaBlendFnc_t alpha_df) {
     GLIDE_TRACE("grAlphaBlendFunction");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_ALPHA_BLEND, rgb_sf, rgb_df, alpha_sf, alpha_df);
     uint32_t am = g_voodoo.params.alphaMode & ~(0xffff00u | AM_BLEND_ENABLE);
     am |= ((uint32_t) rgb_sf & 0xf) << 8 | ((uint32_t) rgb_df & 0xf) << 12 |
           ((uint32_t) alpha_sf & 0xf) << 16 | ((uint32_t) alpha_df & 0xf) << 20;
@@ -239,6 +246,7 @@ void GR_EXPORT GLIDE_API grAlphaBlendFunction(GrAlphaBlendFnc_t rgb_sf, GrAlphaB
 
 void GR_EXPORT GLIDE_API grAlphaTestFunction(GrCmpFnc_t function) {
     GLIDE_TRACE("grAlphaTestFunction");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_ALPHA_TEST_FUNC, function);
     uint32_t am = g_voodoo.params.alphaMode & ~(AM_TEST_ENABLE | AM_TEST_FUNC(7));
     if (function != GR_CMP_ALWAYS)
         am |= AM_TEST_ENABLE | AM_TEST_FUNC(function);
@@ -247,6 +255,7 @@ void GR_EXPORT GLIDE_API grAlphaTestFunction(GrCmpFnc_t function) {
 
 void GR_EXPORT GLIDE_API grAlphaTestReferenceValue(GrAlpha_t value) {
     GLIDE_TRACE("grAlphaTestReferenceValue");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_ALPHA_TEST_REF, value);
     g_voodoo.params.alphaMode = (g_voodoo.params.alphaMode & 0x00ffffffu) | ((uint32_t) value << 24);
 }
 
@@ -257,6 +266,7 @@ void GR_EXPORT GLIDE_API grAlphaTestReferenceValue(GrAlpha_t value) {
 
 void GR_EXPORT GLIDE_API grDepthBufferMode(GrDepthBufferMode_t mode) {
     GLIDE_TRACE("grDepthBufferMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_DEPTH_MODE, mode);
     uint32_t m = g_voodoo.params.fbzMode & ~(uint32_t) (FBZ_DEPTH_ENABLE | FBZ_W_BUFFER | FBZ_DEPTH_SOURCE | FBZ_DEPTH_BIAS);
     switch (mode) {
     case GR_DEPTHBUFFER_ZBUFFER:
@@ -274,16 +284,25 @@ void GR_EXPORT GLIDE_API grDepthBufferMode(GrDepthBufferMode_t mode) {
     default: /* GR_DEPTHBUFFER_DISABLE */
         break;
     }
+    /* Without depth buffering the aux buffer holds alpha (Voodoo Graphics:
+     * depth or alpha share it): destination alpha for blending, written
+     * under grColorMask(.., FXTRUE), cleared by grBufferClear. */
+    if (m & FBZ_DEPTH_ENABLE)
+        m &= ~(uint32_t) FBZ_ALPHA_ENABLE;
+    else
+        m |= FBZ_ALPHA_ENABLE;
     g_voodoo.params.fbzMode = m;
 }
 
 void GR_EXPORT GLIDE_API grDepthBufferFunction(GrCmpFnc_t function) {
     GLIDE_TRACE("grDepthBufferFunction");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_DEPTH_FUNC, function);
     g_voodoo.params.fbzMode = (g_voodoo.params.fbzMode & ~FBZ_DEPTH_FUNC(7)) | FBZ_DEPTH_FUNC(function);
 }
 
 void GR_EXPORT GLIDE_API grDepthMask(FxBool mask) {
     GLIDE_TRACE("grDepthMask");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_DEPTH_MASK, mask);
     if (mask)
         g_voodoo.params.fbzMode |= FBZ_DEPTH_WMASK;
     else
@@ -311,21 +330,31 @@ void GR_EXPORT GLIDE_API grDitherMode(GrDitherMode_t mode) {
  * remember the mode here. */
 void GR_EXPORT GLIDE_API grCullMode(GrCullMode_t mode) {
     GLIDE_TRACE("grCullMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_CULL_MODE, mode);
     g_sw.cull_mode = mode;
 }
 
 /* There are no alpha planes: only the RGB mask has an effect. */
 void GR_EXPORT GLIDE_API grColorMask(FxBool rgb, FxBool a) {
     GLIDE_TRACE("grColorMask");
-    (void) a;
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_COLOR_MASK, rgb, a);
     if (rgb)
         g_voodoo.params.fbzMode |= FBZ_RGB_WMASK;
     else
         g_voodoo.params.fbzMode &= ~(uint32_t) FBZ_RGB_WMASK;
+    /* alpha writes share the aux write mask; with depth buffering on the
+     * aux buffer holds depth and grDepthMask decides */
+    if (!(g_voodoo.params.fbzMode & FBZ_DEPTH_ENABLE)) {
+        if (a)
+            g_voodoo.params.fbzMode |= FBZ_DEPTH_WMASK;
+        else
+            g_voodoo.params.fbzMode &= ~(uint32_t) FBZ_DEPTH_WMASK;
+    }
 }
 
 void GR_EXPORT GLIDE_API grChromakeyMode(GrChromakeyMode_t mode) {
     GLIDE_TRACE("grChromakeyMode");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_CHROMA_MODE, mode);
     if (mode == GR_CHROMAKEY_ENABLE)
         g_voodoo.params.fbzMode |= FBZ_CHROMAKEY;
     else
@@ -334,6 +363,7 @@ void GR_EXPORT GLIDE_API grChromakeyMode(GrChromakeyMode_t mode) {
 
 void GR_EXPORT GLIDE_API grChromakeyValue(GrColor_t value) {
     GLIDE_TRACE("grChromakeyValue");
+    GLIDE_CAPTURE_CALL(GLIDE_CALL_CHROMA_VALUE, value);
     uint32_t argb               = glide_color_to_argb(value);
     g_voodoo.params.chromaKey   = argb & 0xffffff;
     g_voodoo.params.chromaKey_r = (int) ((argb >> 16) & 0xff);

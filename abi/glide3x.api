@@ -1,0 +1,97 @@
+# Glide 3.x exports of glide3x.dll (Voodoo2 runtime, 3dfx source release).
+# Machine-extracted facts (names and signatures only). One line per function:
+# name | return | arguments. Every argument takes 4 bytes of stack (__stdcall).
+# Implemented in core/glide3_abi.c as g3_<name>; tools/abi/gen_glide3x.py writes the .def.
+grDrawPoint | void | const void *pt
+grDrawLine | void | const void *v1, const void *v2
+grDrawTriangle | void | const void *a, const void *b, const void *c
+grVertexLayout | void | FxU32 param, FxI32 offset, FxU32 mode
+grDrawVertexArray | void | FxU32 mode, FxU32 Count, void *pointers
+grDrawVertexArrayContiguous | void | FxU32 mode, FxU32 Count, void *pointers, FxU32 stride
+grAADrawTriangle | void | const void *a, const void *b, const void *c, FxBool ab_antialias, FxBool bc_antialias, FxBool ca_antialias
+grBufferClear | void | GrColor_t color, GrAlpha_t alpha, FxU32 depth
+grBufferSwap | void | FxU32 swap_interval
+grRenderBuffer | void | GrBuffer_t buffer
+grErrorSetCallback | void | GrErrorCallbackFnc_t fnc
+grFinish | void | void
+grFlush | void | void
+grSstWinOpen | GrContext_t | FxU32 hWnd, GrScreenResolution_t screen_resolution, GrScreenRefresh_t refresh_rate, GrColorFormat_t color_format, GrOriginLocation_t origin_location, int nColBuffers, int nAuxBuffers
+grSstWinClose | FxBool | GrContext_t context
+grSelectContext | FxBool | GrContext_t context
+grSstOrigin | void | GrOriginLocation_t origin
+grSstSelect | void | int which_sst
+grAlphaBlendFunction | void | GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df, GrAlphaBlendFnc_t alpha_sf, GrAlphaBlendFnc_t alpha_df
+grAlphaCombine | void | GrCombineFunction_t function, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert
+grAlphaControlsITRGBLighting | void | FxBool enable
+grAlphaTestFunction | void | GrCmpFnc_t function
+grAlphaTestReferenceValue | void | GrAlpha_t value
+grChromakeyMode | void | GrChromakeyMode_t mode
+grChromakeyValue | void | GrColor_t value
+grClipWindow | void | FxU32 minx, FxU32 miny, FxU32 maxx, FxU32 maxy
+grColorCombine | void | GrCombineFunction_t function, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert
+grColorMask | void | FxBool rgb, FxBool a
+grCullMode | void | GrCullMode_t mode
+grConstantColorValue | void | GrColor_t value
+grDepthBiasLevel | void | FxI32 level
+grDepthBufferFunction | void | GrCmpFnc_t function
+grDepthBufferMode | void | GrDepthBufferMode_t mode
+grDepthMask | void | FxBool mask
+grDisableAllEffects | void | void
+grStippleMode | void | GrStippleMode_t mode
+grStipplePattern | void | GrStipplePattern_t mode
+grDitherMode | void | GrDitherMode_t mode
+grFogColorValue | void | GrColor_t fogcolor
+grFogMode | void | GrFogMode_t mode
+grFogTable | void | const GrFog_t ft[]
+grLoadGammaTable | void | FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue
+grSplash | void | float x, float y, float width, float height, FxU32 frame
+grGet | FxU32 | FxU32 pname, FxU32 plength, FxI32 *params
+grGetString | const char * | FxU32 pname
+grQueryResolutions | FxI32 | const GrResolution *resTemplate, GrResolution *output
+grReset | FxBool | FxU32 what
+grGetProcAddress | GrProc | char *procName
+grEnable | void | GrEnableMode_t mode
+grDisable | void | GrEnableMode_t mode
+grCoordinateSpace | void | GrCoordinateSpaceMode_t mode
+grDepthRange | void | FxFloat n, FxFloat f
+grViewport | void | FxI32 x, FxI32 y, FxI32 width, FxI32 height
+grTexCalcMemRequired | FxU32 | GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt
+grTexTextureMemRequired | FxU32 | FxU32 evenOdd, GrTexInfo *info
+grTexMinAddress | FxU32 | GrChipID_t tmu
+grTexMaxAddress | FxU32 | GrChipID_t tmu
+grTexNCCTable | void | GrNCCTable_t table
+grTexSource | void | GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info
+grTexClampMode | void | GrChipID_t tmu, GrTextureClampMode_t s_clampmode, GrTextureClampMode_t t_clampmode
+grTexCombine | void | GrChipID_t tmu, GrCombineFunction_t rgb_function, GrCombineFactor_t rgb_factor, GrCombineFunction_t alpha_function, GrCombineFactor_t alpha_factor, FxBool rgb_invert, FxBool alpha_invert
+grTexDetailControl | void | GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max
+grTexFilterMode | void | GrChipID_t tmu, GrTextureFilterMode_t minfilter_mode, GrTextureFilterMode_t magfilter_mode
+grTexLodBiasValue | void | GrChipID_t tmu, float bias
+grTexDownloadMipMap | void | GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info
+grTexDownloadMipMapLevel | void | GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, void *data
+grTexDownloadMipMapLevelPartial | FxBool | GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, void *data, int start, int end
+grTexDownloadTable | void | GrTexTable_t type, void *data
+grTexDownloadTablePartial | void | GrTexTable_t type, void *data, int start, int end
+grTexMipMapMode | void | GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend
+grTexMultibase | void | GrChipID_t tmu, FxBool enable
+grTexMultibaseAddress | void | GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info
+grLfbLock | FxBool | GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t *info
+grLfbUnlock | FxBool | GrLock_t type, GrBuffer_t buffer
+grLfbConstantAlpha | void | GrAlpha_t alpha
+grLfbConstantDepth | void | FxU32 depth
+grLfbWriteColorSwizzle | void | FxBool swizzleBytes, FxBool swapWords
+grLfbWriteColorFormat | void | GrColorFormat_t colorFormat
+grLfbWriteRegion | FxBool | GrBuffer_t dst_buffer, FxU32 dst_x, FxU32 dst_y, GrLfbSrcFmt_t src_format, FxU32 src_width, FxU32 src_height, FxBool pixelPipeline, FxI32 src_stride, void *src_data
+grLfbReadRegion | FxBool | GrBuffer_t src_buffer, FxU32 src_x, FxU32 src_y, FxU32 src_width, FxU32 src_height, FxU32 dst_stride, void *dst_data
+grGlideInit | void | void
+grGlideShutdown | void | void
+grGlideGetState | void | void *state
+grGlideSetState | void | const void *state
+grGlideGetVertexLayout | void | void *layout
+grGlideSetVertexLayout | void | const void *layout
+guGammaCorrectionRGB | void | FxFloat red, FxFloat green, FxFloat blue
+guFogTableIndexToW | float | int i
+guFogGenerateExp | void | GrFog_t *fogtable, float density
+guFogGenerateExp2 | void | GrFog_t *fogtable, float density
+guFogGenerateLinear | void | GrFog_t *fogtable, float nearZ, float farZ
+gu3dfGetInfo | FxBool | const char *filename, Gu3dfInfo *info
+gu3dfLoad | FxBool | const char *filename, Gu3dfInfo *data

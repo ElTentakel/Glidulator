@@ -180,14 +180,51 @@ static void log_block(uint32_t addr, uint32_t size) {
 }
 #endif
 
+#ifdef GLIDULATOR_TRACE
+/* DPMI 0500h: free memory information; the first dword is the largest
+ * free block in bytes, the third the free pages (-1 = unknown). */
+static unsigned dpmi_mem_info(uint32_t *buf);
+#pragma aux dpmi_mem_info = "push es" "push ds" "pop es" "mov ax, 0500h" "int 31h" "sbb eax, eax" "pop es" \
+    parm [edi] value [eax];
+
+static void log_alloc_failed(uint32_t bytes) {
+    static uint32_t info[12];
+    char            line[96], *p = line;
+    const char     *t = "Memory: allocation of ";
+    for (int i = 0; i < 12; i++)
+        info[i] = 0xffffffffu;
+    dpmi_mem_info(info);
+    while (*t)
+        *p++ = *t++;
+    for (unsigned v = bytes / 1024, d = 1000000; d; d /= 10)
+        if (v >= d || d == 1)
+            *p++ = (char) ('0' + v / d % 10);
+    t = " KB failed, largest free block ";
+    while (*t)
+        *p++ = *t++;
+    for (unsigned v = info[0] / 1024, d = 1000000; d; d /= 10)
+        if (v >= d || d == 1)
+            *p++ = (char) ('0' + v / d % 10);
+    t = " KB\n";
+    while (*t)
+        *p++ = *t++;
+    *p = 0;
+    platform_log(line);
+}
+#endif
+
 void *platform_alloc(size_t n) {
     if (g_host_alloc)
         return g_host_alloc(n);
     uint32_t handle;
     uint32_t total = (uint32_t) (n + BLOCK_HEADER) + (n >= 65536u ? BLOCK_PAD_LARGE : BLOCK_PAD_SMALL);
     uint8_t *p     = (uint8_t *) dpmi_alloc(total, &handle);
-    if (!p)
+    if (!p) {
+#ifdef GLIDULATOR_TRACE
+        log_alloc_failed(total);
+#endif
         return NULL;
+    }
 #ifdef GLIDULATOR_DEBUG
     if (n >= 65536u)
         log_block((uint32_t) p, total);
@@ -356,7 +393,7 @@ static void dos_flush(void);
 #pragma aux dos_flush = "mov ah, 0Dh" "int 21h" modify [eax];
 
 static int log_important(const char *l) {
-    static const char *const keys[] = { "CRASH", "Multi-core", "Machine", "  Bank", "  AP ", "Exception" };
+    static const char *const keys[] = { "CRASH", "Multi-core", "Machine", "  Bank", "  AP ", "Exception", "Write-Combining", "MTRR", "  MTRR", "Close:", "Memory:", "grSstWinOpen failed" };
     for (unsigned k = 0; k < sizeof keys / sizeof keys[0]; k++) {
         const char *a = l, *b = keys[k];
         while (*b && *a == *b)
@@ -513,4 +550,20 @@ long platform_read_file(const char *name, size_t offset, void *buf, size_t len) 
  * (format: glidulator/config.h). */
 int platform_get_config(const char *name, char *buf, size_t n) {
     return glide_config_from_file("GLIDULAT.CFG", name, buf, n);
+}
+
+int platform_run_splash_module(const char *path, uint32_t hwnd, int width, int height, int ncol, int naux,
+                               int color_format) {
+    (void) path;
+    (void) hwnd;
+    (void) width;
+    (void) height;
+    (void) ncol;
+    (void) naux;
+    (void) color_format;
+    return 0; /* 3dfx's splash modules are Windows DLLs */
+}
+
+int platform_scroll_lock(void) {
+    return -1;
 }

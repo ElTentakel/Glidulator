@@ -18,6 +18,17 @@
 void ovl_diag_machine(const char *when); /* diag_dos.c, debug OVL only */
 void keyb_dos_hook(void);                 /* keyb_dos.c: Print Screen */
 void keyb_dos_unhook(void);
+void exit_dos_hook(void (*cleanup)(void)); /* exit_dos.c: exit without grSstWinClose */
+void exit_dos_unhook(void);
+
+/* The game ends (INT 21h/4Ch) with the display still open: tear down as
+ * grSstWinClose would. */
+static void ovl_exit_cleanup(void) {
+#ifdef GLIDULATOR_TRACE
+    platform_log("Close: program ends without grSstWinClose, cleaning up\n");
+#endif
+    grSstWinClose();
+}
 
 /* No calling convention or export marker: the extender looks for
  * "__DLLstart_" as an exact, undecorated symbol name ("option
@@ -77,6 +88,7 @@ void platform_display_open(int w, int h) {
     ovl_diag_machine("Start");
     vid_open(w, h);
     keyb_dos_hook();
+    exit_dos_hook(ovl_exit_cleanup);
 }
 
 void platform_cpu_release(void); /* platform_watcom.c: restore CR4.OSFXSR */
@@ -84,6 +96,7 @@ void platform_cpu_release(void); /* platform_watcom.c: restore CR4.OSFXSR */
 
 void platform_display_close(void) {
     ovl_diag_machine("End");
+    exit_dos_unhook();
     keyb_dos_unhook();
     platform_cpu_release();
     vid_close();

@@ -9,7 +9,11 @@
  *             power shield), read from an original Glide 2.x GLIDE2X.OVL
  *             or glide2x.dll named in GLIDULATOR_SPLASH_FILE
  *             (core/splash_orig.c); falls back to gl1 if that file cannot
- *             be used.
+ *             be used. glide3x.dll: GLIDULATOR_SPLASH_FILE may also name
+ *             3dfx's splash module of Glide 3 (3dfxSpl2.dll or
+ *             3dfxSpl3.dll); it is then loaded and run as 3dfx's Glide 3
+ *             does (platform_run_splash_module), after the Glide 3 part of
+ *             grSstWinOpen.
  *   crt       older spelling of GLIDULATOR_CRT=1 without a logo.
  *
  * GLIDULATOR_CRT=1: analog monitor emulation on every switch to and from
@@ -30,6 +34,7 @@ static int g_logo;
 static int g_crt;
 static int g_logo_done;
 static int g_crt_first; /* sync-in on the next presented frame */
+static int g_module_pending; /* glide3x.dll: 3dfx splash module after grSstWinOpen */
 
 static int str_eq_nocase(const char *a, const char *b) {
     for (; *a && *b; a++, b++) {
@@ -449,14 +454,61 @@ static void gl1_play(void) {
 /* End of grSstWinOpen (display open, Glide in its initial state).
  * Returns 1 if an animation drew, then the caller restores the initial
  * state. */
+/* GLIDULATOR_SPLASH_FILE names a splash module (3dfxSpl*.dll)? */
+static int splash_file_is_module(char *path, size_t n) {
+    if (!platform_get_config("GLIDULATOR_SPLASH_FILE", path, n))
+        return 0;
+    const char *b = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '\\' || *p == '/' || *p == ':')
+            b = p + 1;
+    static const char key[] = "3dfxspl";
+    for (int i = 0; key[i]; i++) {
+        char c = b[i] >= 'A' && b[i] <= 'Z' ? (char) (b[i] - 'A' + 'a') : b[i];
+        if (c != key[i])
+            return 0;
+    }
+    return 1;
+}
+
 int glide_splash_winopen(void) {
     if (g_logo == LOGO_OFF || g_logo_done) {
         g_crt_first = g_crt;
         return 0;
     }
+#ifdef GLIDULATOR_GLIDE3
+    {
+        char path[160];
+        if (g_logo == LOGO_ORIGINAL && splash_file_is_module(path, sizeof path)) {
+            g_logo_done      = 1;
+            g_module_pending = 1; /* glide_splash_module_run, from g3_grSstWinOpen */
+            g_crt_first      = g_crt;
+            return 0;
+        }
+    }
+#endif
     g_logo_done = 1;
     g_glide_mute++;
     int ok = g_logo == LOGO_ORIGINAL && glide_splash_original();
+    if (!ok)
+        gl1_play();
+    g_glide_mute--;
+    return 1;
+}
+
+/* glide3x.dll, end of grSstWinOpen: 3dfx's splash module, or the
+ * fallbacks of glide_splash_winopen if it cannot be run. Returns 1 if
+ * anything was drawn (the caller then clears the buffers and restores the
+ * Glide state). */
+int glide_splash_module_run(uint32_t hwnd, int width, int height, int ncol, int naux, int color_format) {
+    char path[160];
+    if (!g_module_pending)
+        return 0;
+    g_module_pending = 0;
+    if (!splash_file_is_module(path, sizeof path))
+        return 0;
+    g_glide_mute++;
+    int ok = platform_run_splash_module(path, hwnd, width, height, ncol, naux, color_format);
     if (!ok)
         gl1_play();
     g_glide_mute--;

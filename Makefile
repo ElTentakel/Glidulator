@@ -41,9 +41,11 @@ MINGW_RASTER_CFLAGS  := -std=c99 -Wall -g -O2 $(WIN98_DEFS)
 WIN98_SRCS   := platform/win98/platform_win32.c platform/win98/wc_win9x.c platform/common/mtrr_plan.c
 DLL_SRCS     := targets/glide_dll/dllmain.c
 BUILD_WIN98  := build/win98
+BUILD_VXD    := build/win98vxd
+VXD          := $(BUILD_VXD)/GLSMP.VXD
 WIN98_OBJS   := $(patsubst %.c,$(BUILD_WIN98)/%.o,$(CORE_SRCS) $(RASTER_SRCS) $(WIN98_SRCS) $(DLL_SRCS))
 
-.PHONY: all test clean win98 vxd win98-trace win98-debug win98-all dos ovl ovl-trace ovl-debug ovl-all ovl-demo menu dosbox-test replay replay32 bench dist
+.PHONY: all test clean win98 vxd win98-trace win98-debug win98-all glide3dll win98-g3 win98-g3-trace win98-g3-debug win98-g3-all dos ovl ovl-trace ovl-debug ovl-all ovl-demo menu dosbox-test replay replay32 bench dist
 
 all: test
 
@@ -124,6 +126,28 @@ $(BUILD_WIN98)/%.o: %.c
 	mkdir -p $(dir $@)
 	$(MINGW_CC) $(MINGW_CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
+# glide3x.dll (Glide 3.x): the same core with -DGLIDULATOR_GLIDE3 (Glide 2
+# functions renamed to g2_*, see glide2x.h) plus core/glide3_abi.c; exports
+# from the generated glide3x.def (tools/abi/gen_glide3x.py).
+G3_OBJS := $(WIN98_OBJS) $(BUILD_WIN98)/core/glide3_abi.o
+
+glide3dll: $(BUILD_WIN98)/glide3x.dll $(VXD)
+
+$(BUILD_WIN98)/glide3x.dll: $(G3_OBJS) $(BUILD_WIN98)/glide2x_rc.o targets/glide_dll/glide3x.def
+	$(MINGW_CC) $(G3_OBJS) $(BUILD_WIN98)/glide2x_rc.o targets/glide_dll/glide3x.def -shared -static-libgcc -o $@ -Wl,--out-implib,$(BUILD_WIN98)/glide3x.lib -lgdi32
+
+win98-g3:
+	$(MAKE) glide3dll BUILD_WIN98=build/win98_g3 WIN98_DEFS=-DGLIDULATOR_GLIDE3
+
+win98-g3-trace:
+	$(MAKE) glide3dll BUILD_WIN98=build/win98_g3_trace WIN98_DEFS="-DGLIDULATOR_GLIDE3 -DGLIDULATOR_TRACE"
+
+win98-g3-debug:
+	$(MAKE) glide3dll BUILD_WIN98=build/win98_g3_debug WIN98_DEFS="-DGLIDULATOR_GLIDE3 -DGLIDULATOR_TRACE -DGLIDULATOR_DEBUG"
+
+# All three glide3x.dll variants
+win98-g3-all: win98-g3 win98-g3-trace win98-g3-debug
+
 # Trace DLL (like make ovl-trace) and debug DLL (like make ovl-debug); both
 # write GLIDULAT.LOG.
 win98-trace:
@@ -139,8 +163,10 @@ win98-all: win98 win98-trace win98-debug
 # timeval need the BSD declarations hidden by __STRICT_ANSI__.
 DJGPP_PREFIX := /opt/djgpp
 DJGPP_CC             := $(DJGPP_PREFIX)/bin/i586-pc-msdosdjgpp-gcc
-DJGPP_CFLAGS         := -std=gnu99 -Wall -Wextra -g
-DJGPP_RASTER_CFLAGS  := -std=gnu99 -Wall -g -fno-sanitize=shift
+# DOS keeps 2 MB texture memory per TMU (core/glide_internal.h; Windows and
+# Linux use the default 4 MB).
+DJGPP_CFLAGS         := -std=gnu99 -Wall -Wextra -g -DGLIDULATOR_TEXMEM_MB=2
+DJGPP_RASTER_CFLAGS  := -std=gnu99 -Wall -g -fno-sanitize=shift -DGLIDULATOR_TEXMEM_MB=2
 DOS_SRCS    := platform/dos/platform_dos.c
 DOS_TEST_SRCS := targets/glide_dos_test/main.c
 BUILD_DOS   := build/dos
@@ -176,8 +202,8 @@ WASM   := $(OWENV) $(OWBIN)/wasm
 # rasterizer and Glide computations must stay bit-identical to the GCC
 # builds.
 OW_OPT    := -obhilert -5s
-OW_CFLAGS := -bt=dos -mf $(OW_OPT) -fp5 -fpi87 -zri -ei -j -zastd=c99 -zq -we -bd -s -zl
-OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/common/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c platform/dos_ovl/keyb_dos.c targets/glide_ovl/dllmain.c
+OW_CFLAGS := -bt=dos -mf $(OW_OPT) -fp5 -fpi87 -zri -ei -j -zastd=c99 -zq -we -bd -s -zl -dGLIDULATOR_TEXMEM_MB=2
+OVL_SRCS    := platform/dos_ovl/platform_watcom.c platform/dos_ovl/video.c platform/dos_ovl/video_dpmi.c platform/common/mtrr_plan.c platform/dos_ovl/wc_dos.c platform/dos_ovl/smp_dos.c platform/dos_ovl/r3_dos.c platform/dos_ovl/diag_dos.c platform/dos_ovl/keyb_dos.c platform/dos_ovl/exit_dos.c targets/glide_ovl/dllmain.c
 BUILD_OVL   := build/ovl
 OVL_OBJS    := $(patsubst %.c,$(BUILD_OVL)/%.obj,$(CORE_SRCS) $(RASTER_SRCS) $(OVL_SRCS))
 
@@ -189,8 +215,8 @@ ovl: $(BUILD_OVL)/GLIDE2X.OVL
 # A VxD is an LE file like the OVL: Open Watcom wasm + wlink "form windows
 # vxd dynamic", whose only export names the DDB. The 16-bit AP trampoline is
 # assembled by GNU as into a flat binary and included as "db" lines.
-BUILD_VXD := build/win98vxd
-VXD       := $(BUILD_VXD)/GLSMP.VXD
+# BUILD_VXD and VXD are defined near the top: the win98 targets list
+# $(VXD) as a prerequisite, which make expands when it reads the rule.
 
 vxd: $(VXD)
 
@@ -314,7 +340,7 @@ DIST     := build/dist/glidulator-$(VERSION)
 DIST_SYM := build/dist/glidulator-$(VERSION)-symbols
 CRLF     := sed -e 's/\r$$//' -e 's/$$/\r/'
 
-dist: test ovl-all win98-all
+dist: test ovl-all win98-all win98-g3-all
 	rm -rf $(DIST) $(DIST_SYM) $(DIST).zip $(DIST_SYM).zip
 	mkdir -p $(DIST)/BIN/TRACE $(DIST)/BIN/DEBUG $(DIST_SYM)/TRACE $(DIST_SYM)/DEBUG
 	cp build/ovl/GLIDE2X.OVL $(DIST)/BIN/
@@ -323,10 +349,16 @@ dist: test ovl-all win98-all
 	$(MINGW_STRIP) -o $(DIST)/BIN/glide2x.dll build/win98/glide2x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/TRACE/glide2x.dll build/win98_trace/glide2x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/DEBUG/glide2x.dll build/win98_debug/glide2x.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/glide3x.dll build/win98_g3/glide3x.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/TRACE/glide3x.dll build/win98_g3_trace/glide3x.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/DEBUG/glide3x.dll build/win98_g3_debug/glide3x.dll
 	for d in BIN BIN/TRACE BIN/DEBUG; do cp $(VXD) $(DIST)/$$d/GLSMP.VXD; done
 	cp build/ovl/GLIDE2X.map build/win98/glide2x.dll $(DIST_SYM)/
 	cp build/ovl_trace/GLIDE2X.map build/win98_trace/glide2x.dll $(DIST_SYM)/TRACE/
 	cp build/ovl_debug/GLIDE2X.map build/win98_debug/glide2x.dll $(DIST_SYM)/DEBUG/
+	cp build/win98_g3/glide3x.dll $(DIST_SYM)/
+	cp build/win98_g3_trace/glide3x.dll $(DIST_SYM)/TRACE/
+	cp build/win98_g3_debug/glide3x.dll $(DIST_SYM)/DEBUG/
 	sed -e "s/@VERSION@/$(VERSION)/" package/README.TXT | $(CRLF) > $(DIST)/README.TXT
 	$(CRLF) package/GLIDULAT.CFG > $(DIST)/GLIDULAT.CFG
 	$(CRLF) COPYING > $(DIST)/COPYING.TXT

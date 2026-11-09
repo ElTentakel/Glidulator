@@ -1,9 +1,18 @@
-/* Version information of glide2x.dll (Explorer: Properties > Version). */
+/* Version information of glide2x.dll and glide3x.dll (-DGLIDULATOR_GLIDE3)
+ * (Explorer: Properties > Version). */
 
 #include <winver.h>
 #include "glidulator/version.h"
 
 #define VER_NUM GLIDULATOR_VERSION_MAJOR, GLIDULATOR_VERSION_MINOR, GLIDULATOR_VERSION_PATCH, 0
+
+#ifdef GLIDULATOR_GLIDE3
+#    define GLIDULATOR_API  "Glide 3.x"
+#    define GLIDULATOR_FILE "glide3x"
+#else
+#    define GLIDULATOR_API  "Glide 2.x"
+#    define GLIDULATOR_FILE "glide2x"
+#endif
 
 #if defined(GLIDULATOR_DEBUG)
 #    define GLIDULATOR_VARIANT "(debug)"
@@ -27,11 +36,11 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "ElTentakel Graphics Systems"
-            VALUE "FileDescription",  "Glidulator GL-1 (Glide 2.x software renderer)"
+            VALUE "FileDescription",  "Glidulator GL-1 (" GLIDULATOR_API " software renderer)"
             VALUE "FileVersion",      GLIDULATOR_VERSION " " GLIDULATOR_VARIANT
-            VALUE "InternalName",     "glide2x"
+            VALUE "InternalName",     GLIDULATOR_FILE
             VALUE "LegalCopyright",   "GNU GPL v2 or later"
-            VALUE "OriginalFilename", "glide2x.dll"
+            VALUE "OriginalFilename", GLIDULATOR_FILE ".dll"
             VALUE "ProductName",      "Glidulator GL-1"
             VALUE "ProductVersion",   GLIDULATOR_VERSION
         END

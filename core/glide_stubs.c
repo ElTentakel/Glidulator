@@ -100,29 +100,6 @@ void GR_EXPORT GLIDE_API grSstVidMode(FxU32 whichSst, void * vidTimings) {
     (void) vidTimings;
 }
 
-void GR_EXPORT GLIDE_API grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
-    GLIDE_TRACE("grTexDetailControl");
-    (void) tmu;
-    (void) lod_bias;
-    (void) detail_scale;
-    (void) detail_max;
-}
-
-void GR_EXPORT GLIDE_API grTexMultibase(GrChipID_t tmu, FxBool enable) {
-    GLIDE_TRACE("grTexMultibase");
-    (void) tmu;
-    (void) enable;
-}
-
-void GR_EXPORT GLIDE_API grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress, FxU32 evenOdd, GrTexInfo * info) {
-    GLIDE_TRACE("grTexMultibaseAddress");
-    (void) tmu;
-    (void) range;
-    (void) startAddress;
-    (void) evenOdd;
-    (void) info;
-}
-
 void GR_EXPORT GLIDE_API guAADrawTriangleWithClip(const GrVertex * a, const GrVertex * b, const GrVertex * c) {
     GLIDE_TRACE("guAADrawTriangleWithClip");
     (void) a;

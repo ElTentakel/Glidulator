@@ -47,18 +47,14 @@ FxU32 g_tris_processed, g_tris_drawn;
 
 static GrErrorCallbackFnc_t g_error_callback = 0;
 
-/* texture_cache[tmu][c].data must be non-NULL and large enough for all mip
- * levels of a 256x256 texture for EVERY slot c: voodoo_half_triangle()
- * computes &texture_cache[0][tex_entry[0]].data[texture_offset[c]]
- * unconditionally for all LOD levels, and voodoo_use_texture() increments
- * texture_last_removed before its first comparison, so even the first
- * upload lands in slot 1. All TEX_CACHE_MAX slots of every emulated TMU are
- * allocated as 86Box's voodoo_init() does; an unused TMU1 (one TMU) still
- * needs slot 0 for the same pointer arithmetic. A slot holds exactly the mip chain laid
- * out by texture_offset[] (its last entry is the end); 86Box reserves a
- * second, never used 256x256 area, which cost 8.4 MB over all slots: too
- * much for Pyl under its DOS/4GW 1.97 (fatal error CH_C3DFX[80] when
- * loading a level). */
+/* Texture cache memory (vid_voodoo_common.h, TEX_CACHE_MAX): per TMU a
+ * pool of TEX_POOL_MB for the decoded textures, plus one full-chain buffer
+ * (TEX_CACHE_SLOT_WORDS) that every entry without a block points at:
+ * voodoo_half_triangle() computes
+ * &texture_cache[t][tex_entry[t]].data[texture_offset[c]] for both TMUs and
+ * all levels, also for an unused TMU1. 86Box reserves a second, never used
+ * 256x256 area per slot; with Pyl under its DOS/4GW 1.97 that was too much
+ * memory (fatal error CH_C3DFX[80] when loading a level). */
 #define TEX_CACHE_SLOT_WORDS (texture_offset[LOD_MAX + 2] + 1)
 
 /* Buffers a grLfbLock() pointer can point into (colour/depth buffer,
@@ -144,9 +140,9 @@ static int board_parse(const char *s) {
  * (Tomb Raider's TUMBRUSH.EXE) quit silently unless grSstQueryHardware()
  * reports GR_SSTTYPE_SST96; reporting it for every game is riskier, so it
  * is opt-in. Values as for the Voodoo Graphics board (4 MB, 1 TMU, 2 MB).
- * GLIDULATOR_TMUS=2: the Voodoo Graphics board with two TMUs (2 MB each),
- * as boards like Obsidian's 100SB had; games then texture in one pass with
- * both units (e.g. lightmaps) instead of two. */
+ * Two TMUs (Windows default, GLIDULATOR_TMUS=2): the Voodoo Graphics board
+ * with two TMUs, as boards like Obsidian's 100SB had; games then texture in
+ * one pass with both units (e.g. lightmaps) instead of two. */
 static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
     char cfg[16];
     memset(hwconfig, 0, sizeof(*hwconfig));
@@ -156,7 +152,7 @@ static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
         hwconfig->SSTs[0].sstBoard.SST96Config.fbRam            = 4;
         hwconfig->SSTs[0].sstBoard.SST96Config.nTexelfx         = 1;
         hwconfig->SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRev = 1;
-        hwconfig->SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRam = 2;
+        hwconfig->SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRam = GLIDULATOR_TEXMEM_MB;
         return;
     }
     hwconfig->SSTs[0].type                              = GR_SSTTYPE_VOODOO;
@@ -166,7 +162,7 @@ static void fill_fake_hwconfig(GrHwConfiguration *hwconfig) {
     hwconfig->SSTs[0].sstBoard.VoodooConfig.sliDetect    = FXFALSE;
     for (int t = 0; t < g_num_tmus; t++) {
         hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[t].tmuRev = 1;
-        hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[t].tmuRam = 2;
+        hwconfig->SSTs[0].sstBoard.VoodooConfig.tmuConfig[t].tmuRam = GLIDULATOR_TEXMEM_MB;
     }
 }
 
@@ -236,8 +232,16 @@ static void free_voodoo_resources(void) {
     glide_crt_close();
     for (int t = 0; t < 2; t++) {
         platform_free(g_voodoo.tex_mem[t]);
-        for (int c = 0; c < TEX_CACHE_MAX; c++)
-            platform_free(g_voodoo.texture_cache[t][c].data);
+#ifdef GLIDULATOR_TRACE
+        if (g_voodoo.tex_chunks[t])
+            glide_trace_note("Close: texture pool, TMU x MB", (unsigned long) t, (unsigned long) g_voodoo.tex_chunks[t]);
+#endif
+        for (int k = 0; k < g_voodoo.tex_chunks[t]; k++)
+            platform_free(g_voodoo.tex_chunk[t][k]);
+        g_voodoo.tex_chunks[t] = 0;
+        platform_free(g_voodoo.tex_dummy[t]);
+        g_voodoo.tex_mem[t]   = NULL;
+        g_voodoo.tex_dummy[t] = NULL;
     }
 }
 
@@ -260,6 +264,11 @@ void GR_EXPORT GLIDE_API grSstWinClose(void) {
     GLIDE_TRACE("grSstWinClose");
     if (g_win_open) {
         glide_splash_winclose(); /* monitor emulation, before the switch back */
+        /* Everything queued drawn first: the game's core draws with the
+         * workers in glide_mt_idle(), with the JIT's SSE code, and
+         * platform_display_close() gives the CPU back as found (DOS ring 0:
+         * CR4.OSFXSR off again; SSE then raises #UD). */
+        glide_mt_idle();
         platform_display_close();
         free_voodoo_resources();
         g_win_open = 0;
@@ -338,16 +347,20 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     size_t row_bytes = (size_t) width * 2; /* RGB565 */
     size_t fb_needed = row_bytes * (size_t) height * 2; /* colour + depth (16 bit each) */
     fb_needed *= (size_t) glide_fsaa_read_cfg();        /* FSAA: both per plane, core/fsaa.c */
-    size_t fb_size   = 1;
-    while (fb_size < fb_needed)
-        fb_size <<= 1; /* fb_mask needs a power of two */
+    /* Exactly what is needed (640x480: 1.2 MB instead of 2 MB rounded up).
+     * fb_mask (the rasterizer masks depth row addresses with it) stays the
+     * next power of two minus one, i.e. a no-op: rows are always inside the
+     * screen because the clip window is clamped to it (glide_draw_triangle). */
+    size_t fb_pow2 = 1;
+    while (fb_pow2 < fb_needed)
+        fb_pow2 <<= 1;
 
-    g_voodoo.fb_mem = (uint8_t *) keep_alloc(&g_keep_fb, fb_size);
+    g_voodoo.fb_mem = (uint8_t *) keep_alloc(&g_keep_fb, fb_needed);
     if (!g_voodoo.fb_mem)
         return win_open_failed("out of memory");
-    memset(g_voodoo.fb_mem, 0, fb_size);
-    g_voodoo.fb_size = (int) fb_size;
-    g_voodoo.fb_mask = (uint32_t) (fb_size - 1);
+    memset(g_voodoo.fb_mem, 0, fb_needed);
+    g_voodoo.fb_size = (int) fb_needed;
+    g_voodoo.fb_mask = (uint32_t) (fb_pow2 - 1);
     glide_splash_config();
     if (!glide_fsaa_open(width, height) || !glide_vfilter_open(width, height) ||
         (glide_splash_crt() && !glide_crt_open(width, height))) {
@@ -355,21 +368,21 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
         return win_open_failed("out of memory");
     }
 
-    /* TMU1 without dual TMUs: slot 0 only, for the same pointer
-     * arithmetic (see TEX_CACHE_SLOT_WORDS) */
+    /* texture cache: a pool per emulated TMU (its first 1 MB piece now, more
+     * by need, see TEX_POOL_MB), a dummy chain for both (an unused TMU1
+     * only needs the pointer arithmetic, see above) */
     for (int t = 0; t < 2; t++) {
-        int slots = (t < g_num_tmus) ? TEX_CACHE_MAX : 1;
-        for (int c = 0; c < slots; c++) {
-            g_voodoo.texture_cache[t][c].data = (uint32_t *) platform_alloc(TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
-            if (!g_voodoo.texture_cache[t][c].data) {
-                free_voodoo_resources();
-                return win_open_failed("out of memory");
-            }
-            memset(g_voodoo.texture_cache[t][c].data, 0, TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
-            /* base = -1 marks a free slot in 86Box (voodoo_init()); a zero
-             * base would pretend a real texture at address 0. */
-            g_voodoo.texture_cache[t][c].base = (uint32_t) -1;
+        g_voodoo.tex_dummy[t] = (uint32_t *) platform_alloc(TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
+        if (t < g_num_tmus) {
+            g_voodoo.tex_chunk[t][0] = (uint32_t *) platform_alloc(TEX_CHUNK_WORDS * sizeof(uint32_t));
+            g_voodoo.tex_chunks[t]   = g_voodoo.tex_chunk[t][0] ? 1 : 0;
         }
+        if (!g_voodoo.tex_dummy[t] || (t < g_num_tmus && !g_voodoo.tex_chunks[t])) {
+            free_voodoo_resources();
+            return win_open_failed("out of memory");
+        }
+        memset(g_voodoo.tex_dummy[t], 0, TEX_CACHE_SLOT_WORDS * sizeof(uint32_t));
+        voodoo_tex_cache_reset(&g_voodoo, t); /* every entry free, base = -1 */
     }
     for (int t = 0; t < g_num_tmus; t++) {
         g_voodoo.tex_mem[t] = (uint8_t *) platform_alloc(TEX_MEM_BYTES);
@@ -421,11 +434,7 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     grGlideGetState(&before);
     g_glide_mute--;
     if (glide_splash_winopen()) {
-        glide_mt_idle();
-        memset(g_voodoo.fb_mem, 0, (size_t) g_voodoo.fb_size);
-        memset(g_voodoo.tex_mem[0], 0, TEX_MEM_BYTES);
-        for (int c = 0; c < TEX_CACHE_MAX; c++)
-            g_voodoo.texture_cache[0][c].base = (uint32_t) -1;
+        glide_splash_cleanup();
         initial_state(origin_location);
         g_glide_mute++;
         grGlideSetState(&before);
@@ -434,13 +443,24 @@ FxBool GR_EXPORT GLIDE_API grSstWinOpen(FxU32 hWnd, GrScreenResolution_t screen_
     return FXTRUE;
 }
 
+/* After a start-up animation: the program finds empty buffers and texture
+ * memory, as on a freshly opened board. */
+void glide_splash_cleanup(void) {
+    glide_mt_idle();
+    memset(g_voodoo.fb_mem, 0, (size_t) g_voodoo.fb_size);
+    for (int t = 0; t < g_num_tmus; t++) {
+        memset(g_voodoo.tex_mem[t], 0, TEX_MEM_BYTES);
+        voodoo_tex_cache_reset(&g_voodoo, t);
+    }
+}
+
 /* Like the board's fastfill unit: only inside the clip window, colour only
- * with the RGB write mask set, depth only with the depth write mask set
- * (grDepthMask). There is no alpha buffer. */
+ * with the RGB write mask set, the aux buffer only with its write mask set
+ * (grDepthMask, or grColorMask's alpha without depth buffering): depth, or
+ * alpha when the aux buffer is the alpha buffer (depth buffering off). */
 void GR_EXPORT GLIDE_API grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 depth) {
     GLIDE_TRACE("grBufferClear");
     glide_mt_idle();
-    (void) alpha;
     if (!g_win_open)
         return;
     uint32_t argb   = glide_color_to_argb(color);
@@ -450,6 +470,8 @@ void GR_EXPORT GLIDE_API grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 d
     uint16_t rgb565 = (uint16_t) ((((argb >> 16) & 0xf8) << 8) | (((argb >> 8) & 0xfc) << 3) | ((argb & 0xff) >> 3));
     int      clear_rgb   = (g_voodoo.params.fbzMode & FBZ_RGB_WMASK) != 0;
     int      clear_depth = (g_voodoo.params.fbzMode & FBZ_DEPTH_WMASK) != 0;
+    if (g_voodoo.params.fbzMode & FBZ_ALPHA_ENABLE)
+        depth = (FxU16) (alpha & 0xff); /* the alpha buffer */
 
     int x0 = g_clip_left < 0 ? 0 : g_clip_left;
     int y0 = g_clip_top < 0 ? 0 : g_clip_top;
@@ -511,6 +533,7 @@ void GR_EXPORT GLIDE_API grBufferSwap(int swap_interval) {
 #endif
     glide_mt_idle(); /* every triangle of the frame is drawn */
     glide_mt_frame(); /* balance the workers' scanlines */
+    g_voodoo.tex_frame++; /* texture cache LRU (vid_voodoo_texture.c) */
     glide_present(vsync); /* vsync, image options, OSD, output (core/osd.c) */
 #ifdef GLIDULATOR_TRACE
     glide_trace_swap();
@@ -745,10 +768,14 @@ void glide_draw_triangle(const GrVertex *in_a, const GrVertex *in_b, const GrVer
         }
     }
 
-    params.clipLeft  = g_clip_left;
-    params.clipRight = g_clip_right;
-    params.clipLowY  = g_clip_top;
-    params.clipHighY = g_clip_bottom;
+    /* The clip window as the game set it, but never outside the screen:
+     * the frame buffer holds exactly width x height per plane, so rows or
+     * columns beyond it would land outside the allocation (or, with the Y
+     * origin at the bottom, before it). Nothing there is ever displayed. */
+    params.clipLeft  = g_clip_left < 0 ? 0 : g_clip_left > g_width ? g_width : g_clip_left;
+    params.clipRight = g_clip_right < 0 ? 0 : g_clip_right > g_width ? g_width : g_clip_right;
+    params.clipLowY  = g_clip_top < 0 ? 0 : g_clip_top > g_height ? g_height : g_clip_top;
+    params.clipHighY = g_clip_bottom < 0 ? 0 : g_clip_bottom > g_height ? g_height : g_clip_bottom;
 
     params.draw_offset   = 0;
     params.aux_offset    = g_aux_offset;

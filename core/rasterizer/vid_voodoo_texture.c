@@ -239,6 +239,200 @@ voodoo_recalc_tex3(voodoo_t *voodoo, int tmu)
 
 #define makergba(r, g, b, a) ((b) | ((g) << 8) | ((r) << 16) | ((a) << 24))
 
+#ifdef GLIDULATOR_TRACE
+uint64_t        glide_trace_cycles(void);
+extern uint64_t g_perf_tex_misses, g_perf_tex_decode_cyc;
+#endif
+
+/* GLIDULATOR: texture cache with a pool per TMU (see TEX_CACHE_MAX in
+ * vid_voodoo_common.h). An entry's block holds the levels from its class
+ * (smallest level index) to the end of the chain, laid out as before by
+ * texture_offset[]; data points texture_offset[cls] words before the block,
+ * so data[texture_offset[lod]] stays the address of level lod. */
+static uint32_t
+tex_class_words(int cls)
+{
+    /* up to texture_offset[LOD_MAX + 2] + 1 like a full 86Box slot: the
+       rasterizer may read one level past lod_max (trilinear) */
+    return texture_offset[LOD_MAX + 2] + 1 - texture_offset[cls];
+}
+
+static unsigned
+tex_hash_of(uint32_t base, uint32_t key, uint32_t pal)
+{
+    uint32_t h = base * 0x9e3779b1u ^ key * 0x85ebca6bu ^ pal * 0xc2b2ae35u;
+    h ^= h >> 15;
+    return h & (TEX_HASH_SIZE - 1);
+}
+
+static void
+tex_hash_insert(voodoo_t *voodoo, int tmu, int c)
+{
+    texture_t *e = &voodoo->texture_cache[tmu][c];
+    unsigned   h = tex_hash_of(e->base, e->tLOD, e->palette_checksum);
+    e->hnext                = voodoo->tex_hash[tmu][h];
+    voodoo->tex_hash[tmu][h] = c;
+}
+
+static void
+tex_hash_remove(voodoo_t *voodoo, int tmu, int c)
+{
+    texture_t *e = &voodoo->texture_cache[tmu][c];
+    int       *p = &voodoo->tex_hash[tmu][tex_hash_of(e->base, e->tLOD, e->palette_checksum)];
+    while (*p >= 0 && *p != c)
+        p = &voodoo->texture_cache[tmu][*p].hnext;
+    if (*p == c)
+        *p = e->hnext;
+    e->hnext = -1;
+}
+
+/* Drops a texture from the cache; its block stays with the entry and is
+   reused for a texture of the same class once no drawer uses it. */
+static void
+tex_entry_free(voodoo_t *voodoo, int tmu, int c)
+{
+    texture_t *e = &voodoo->texture_cache[tmu][c];
+    if (e->base == (uint32_t) -1)
+        return;
+    tex_hash_remove(voodoo, tmu, c);
+    e->base                     = (uint32_t) -1;
+    voodoo->tex_pg_lo[tmu][c]   = voodoo->tex_pg_hi[tmu][c] = 0;
+    int list = e->block ? e->cls : TEX_CLASSES;
+    e->fnext                    = voodoo->tex_free[tmu][list];
+    voodoo->tex_free[tmu][list] = c;
+}
+
+/* First entry of free list `list` that no drawer still uses; -1 = none */
+static int
+tex_free_take(voodoo_t *voodoo, int tmu, int list)
+{
+    int *p = &voodoo->tex_free[tmu][list];
+    while (*p >= 0) {
+        int c = *p;
+        if (!voodoo_texture_in_use(voodoo, &voodoo->texture_cache[tmu][c])) {
+            *p                                  = voodoo->texture_cache[tmu][c].fnext;
+            voodoo->texture_cache[tmu][c].fnext = -1;
+            return c;
+        }
+        p = &voodoo->texture_cache[tmu][c].fnext;
+    }
+    return -1;
+}
+
+/* Empties the cache of one TMU and hands the whole pool back. Drawers must
+   be idle (nothing may still read a block). */
+void
+voodoo_tex_cache_reset(voodoo_t *voodoo, int tmu)
+{
+    for (int k = 0; k <= TEX_CLASSES; k++)
+        voodoo->tex_free[tmu][k] = -1;
+    for (int h = 0; h < TEX_HASH_SIZE; h++)
+        voodoo->tex_hash[tmu][h] = -1;
+    for (int c = TEX_CACHE_MAX - 1; c >= 0; c--) {
+        texture_t *e = &voodoo->texture_cache[tmu][c];
+        e->base      = (uint32_t) -1;
+        e->block     = NULL;
+        e->cls       = -1;
+        e->data      = voodoo->tex_dummy[tmu];
+        e->hnext     = -1;
+        voodoo->tex_pg_lo[tmu][c] = voodoo->tex_pg_hi[tmu][c] = 0;
+        e->fnext     = voodoo->tex_free[tmu][TEX_CLASSES];
+        voodoo->tex_free[tmu][TEX_CLASSES] = c;
+        for (int k = 0; k < 4; k++)
+            e->addr_start[k] = e->addr_end[k] = 0;
+    }
+    voodoo->tex_pool_top[tmu]  = 0;
+    voodoo->tex_chunk_cur[tmu] = 0;
+}
+
+/* A block of words from the pool: from the current piece, else the next
+   piece already there (after a reset), else a new piece while fewer than
+   TEX_POOL_MB exist. NULL when the pool is full or no memory is left. */
+static uint32_t *
+tex_pool_carve(voodoo_t *voodoo, int tmu, uint32_t words)
+{
+    for (;;) {
+        if (voodoo->tex_chunks[tmu] && voodoo->tex_pool_top[tmu] + words <= TEX_CHUNK_WORDS) {
+            uint32_t *b = voodoo->tex_chunk[tmu][voodoo->tex_chunk_cur[tmu]] + voodoo->tex_pool_top[tmu];
+            voodoo->tex_pool_top[tmu] += words;
+            return b;
+        }
+        if (voodoo->tex_chunk_cur[tmu] + 1 < voodoo->tex_chunks[tmu]) {
+            voodoo->tex_chunk_cur[tmu]++;
+            voodoo->tex_pool_top[tmu] = 0;
+            continue;
+        }
+        if (voodoo->tex_chunks[tmu] >= TEX_POOL_MB)
+            return NULL;
+        uint32_t *c = (uint32_t *) platform_alloc(TEX_CHUNK_WORDS * sizeof(uint32_t));
+        if (!c)
+            return NULL;
+        voodoo->tex_chunk[tmu][voodoo->tex_chunks[tmu]] = c;
+        voodoo->tex_chunk_cur[tmu]                      = voodoo->tex_chunks[tmu]++;
+        voodoo->tex_pool_top[tmu]                       = 0;
+    }
+}
+
+/* An entry with a block of class cls for a new texture: a free one of that
+   class, else a new block from the pool, else the least recently used
+   texture of that class. When that one was used in this frame the pool is
+   split badly between the classes (or too small): it is reset once per
+   frame and refilled by need. */
+static int
+tex_alloc(voodoo_t *voodoo, int tmu, int cls)
+{
+    static uint32_t reset_frame[2] = { (uint32_t) -1, (uint32_t) -1 };
+    uint32_t        words          = tex_class_words(cls);
+    int             waited         = 0;
+    if (words > TEX_CHUNK_WORDS)
+        glr_fatal("Texture pool piece too small\n");
+    for (;;) {
+        int c = tex_free_take(voodoo, tmu, cls);
+        if (c >= 0)
+            return c;
+        c = tex_free_take(voodoo, tmu, TEX_CLASSES);
+        if (c >= 0) {
+            texture_t *e = &voodoo->texture_cache[tmu][c];
+            uint32_t  *b = tex_pool_carve(voodoo, tmu, words);
+            if (b) {
+                e->block = b;
+                e->cls   = cls;
+                e->data  = e->block - texture_offset[cls];
+                return c;
+            }
+            e->fnext                           = voodoo->tex_free[tmu][TEX_CLASSES]; /* back, pool full */
+            voodoo->tex_free[tmu][TEX_CLASSES] = c;
+        }
+        int victim = -1;
+        for (int k = 0; k < TEX_CACHE_MAX; k++) {
+            texture_t *e = &voodoo->texture_cache[tmu][k];
+            if (e->cls != cls || e->base == (uint32_t) -1 || voodoo_texture_in_use(voodoo, e))
+                continue;
+            if (victim < 0 || (int32_t) (e->last_used - voodoo->texture_cache[tmu][victim].last_used) < 0)
+                victim = k;
+        }
+        if (victim >= 0 && (voodoo->texture_cache[tmu][victim].last_used != voodoo->tex_frame ||
+                            reset_frame[tmu] == voodoo->tex_frame)) {
+            tex_entry_free(voodoo, tmu, victim);
+            continue; /* now on the free list of its class */
+        }
+        if (victim < 0 && !waited && glide_mt_workers()) {
+            glide_mt_idle(); /* entries may only be in use by the drawers */
+            waited = 1;
+            continue;
+        }
+        /* the pool belongs to other classes, or this class is short of
+           blocks for the frame's textures: start this TMU's pool over;
+           the same texture of the other TMU may be in use for this very
+           triangle, so only this TMU */
+        if (glide_mt_workers())
+            glide_mt_idle();
+        reset_frame[tmu] = voodoo->tex_frame;
+        voodoo->tex_resets++;
+        voodoo_tex_cache_reset(voodoo, tmu);
+    }
+}
+
 void
 voodoo_use_texture(voodoo_t *voodoo, voodoo_params_t *params, int tmu)
 {
@@ -293,37 +487,25 @@ voodoo_use_texture(voodoo_t *voodoo, voodoo_params_t *params, int tmu)
     tex_key = (params->tLOD[tmu] & 0xfc0fff) | (params->textureMode[tmu] & TEXTUREMODE_TRILINEAR);
 
     /*Try to find texture in cache*/
-    for (c = 0; c < TEX_CACHE_MAX; c++) {
-        if (voodoo->texture_cache[tmu][c].base == addr && voodoo->texture_cache[tmu][c].tLOD == tex_key && voodoo->texture_cache[tmu][c].palette_checksum == palette_checksum) {
+    /* GLIDULATOR: hash lookup over TEX_CACHE_MAX entries (86Box: linear over
+       64 slots) */
+    for (c = voodoo->tex_hash[tmu][tex_hash_of(addr, tex_key, palette_checksum)]; c >= 0;
+         c = voodoo->texture_cache[tmu][c].hnext) {
+        texture_t *e = &voodoo->texture_cache[tmu][c];
+        if (e->base == addr && e->tLOD == tex_key && e->palette_checksum == palette_checksum) {
             params->tex_entry[tmu] = c;
-            voodoo->texture_cache[tmu][c].refcount++;
+            e->refcount++;
+            e->last_used = voodoo->tex_frame;
             return;
         }
     }
 
-    /*Texture not found, search for unused texture*/
-    do {
-        for (c = 0; c < TEX_CACHE_MAX; c++) {
-            voodoo->texture_last_removed++;
-            voodoo->texture_last_removed &= (TEX_CACHE_MAX - 1);
-            if (!voodoo_texture_in_use(voodoo, &voodoo->texture_cache[tmu][voodoo->texture_last_removed]))
-                break;
-        }
-        if (c == TEX_CACHE_MAX) {
-            /* GLIDULATOR: every slot is still in use by render workers
-             * (core/render_mt.c): wait until they are done, then search
-             * again. Without workers nothing can free a slot: fatal
-             * instead of spinning forever. */
-            if (glide_mt_workers())
-                glide_mt_idle();
-            else
-                glr_fatal("Texture cache full (no free slot)\n");
-        }
-    } while (c == TEX_CACHE_MAX);
-    if (c == TEX_CACHE_MAX)
-        glr_fatal("Texture cache full!\n");
-
-    c = voodoo->texture_last_removed;
+    /*Texture not found: an entry with a block of the right size*/
+#ifdef GLIDULATOR_TRACE
+    uint64_t t_miss = glide_trace_cycles();
+    g_perf_tex_misses++;
+#endif
+    c = tex_alloc(voodoo, tmu, MIN((params->tLOD[tmu] >> 2) & 15, 8));
 
     if ((voodoo->params.tLOD[tmu] & LOD_SPLIT) && (voodoo->params.tLOD[tmu] & LOD_ODD) && (voodoo->params.tLOD[tmu] & LOD_TMULTIBASEADDR))
         voodoo->texture_cache[tmu][c].base = params->texBaseAddr1[tmu];
@@ -569,14 +751,83 @@ voodoo_use_texture(voodoo_t *voodoo, voodoo_params_t *params, int tmu)
         addr     = voodoo->texture_cache[tmu][c].addr_start[d];
         addr_end = voodoo->texture_cache[tmu][c].addr_end[d];
 
+        /* GLIDULATOR: page bounds once here instead of on every upload */
+        voodoo->texture_cache[tmu][c].pg_s[d] = voodoo->texture_cache[tmu][c].pg_e[d] = 0;
+        if (addr_end != 0) {
+            uint32_t s0 = addr & voodoo->texture_mask & ~0x3ffu;
+            uint32_t e0 = ((addr_end & voodoo->texture_mask) + 0x3ffu) & ~0x3ffu;
+            if (e0 < s0)
+                e0 = voodoo->texture_mask + 1;
+            voodoo->texture_cache[tmu][c].pg_s[d] = s0;
+            voodoo->texture_cache[tmu][c].pg_e[d] = e0;
+        }
+
         if (addr_end != 0) {
             for (; addr <= addr_end; addr += (1 << TEX_DIRTY_SHIFT))
                 voodoo->texture_present[tmu][(addr & voodoo->texture_mask) >> TEX_DIRTY_SHIFT] = 1;
         }
     }
 
+    {
+        uint32_t lo = (uint32_t) -1, hi = 0;
+        for (int d = 0; d < 4; d++)
+            if (voodoo->texture_cache[tmu][c].pg_e[d]) {
+                lo = MIN(lo, voodoo->texture_cache[tmu][c].pg_s[d]);
+                hi = MAX(hi, voodoo->texture_cache[tmu][c].pg_e[d]);
+            }
+        voodoo->tex_pg_lo[tmu][c] = hi ? lo : 0;
+        voodoo->tex_pg_hi[tmu][c] = hi;
+    }
     params->tex_entry[tmu] = c;
     voodoo->texture_cache[tmu][c].refcount++;
+    voodoo->texture_cache[tmu][c].last_used = voodoo->tex_frame;
+    tex_hash_insert(voodoo, tmu, c);
+#ifdef GLIDULATOR_TRACE
+    g_perf_tex_decode_cyc += glide_trace_cycles() - t_miss;
+#endif
+}
+
+/* GLIDULATOR: invalidation for one upload of n bytes at addr, instead of
+ * one flush_texture_cache() per touched 1 KB page, which walks every cache
+ * entry and rebuilds texture_present each time (O(pages x entries x pages)
+ * per upload; Undying does ~1000 uploads per frame). Evicts the same
+ * entries: every entry whose page range contains a touched page.
+ * texture_present is not rebuilt: a bit left set for an evicted entry only
+ * costs a later needless scan here, it never keeps a stale texture. */
+void
+flush_texture_range(voodoo_t *voodoo, uint32_t addr, uint32_t n, int tmu)
+{
+    uint32_t mask    = voodoo->texture_mask;
+    uint32_t first   = (addr & mask) & ~0x3ffu;
+    uint32_t last    = ((addr & mask) + n + 0x3ffu) & ~0x3ffu; /* exclusive, may exceed mask + 1 */
+    int      present = 0;
+
+    for (uint32_t a = first; a < last; a += (1u << TEX_DIRTY_SHIFT))
+        if (voodoo->texture_present[tmu][(a & mask) >> TEX_DIRTY_SHIFT]) {
+            present = 1;
+            break;
+        }
+    if (!present)
+        return;
+
+    const uint32_t *plo = voodoo->tex_pg_lo[tmu], *phi = voodoo->tex_pg_hi[tmu];
+    int             wrap = last > mask + 1;
+    for (int c = 0; c < TEX_CACHE_MAX; c++) {
+        /* quick test on the entry's whole range, then per level group */
+        if (!phi[c] || !((first < phi[c] && plo[c] < last) || (wrap && plo[c] < last - (mask + 1))))
+            continue;
+        const texture_t *e = &voodoo->texture_cache[tmu][c];
+        for (uint8_t d = 0; d < 4; d++) {
+            uint32_t s0 = e->pg_s[d], e0 = e->pg_e[d];
+            if (e0 == 0)
+                continue;
+            /* touched pages [first, last), wrapping at mask + 1 */
+            if ((first < e0 && s0 < last) || (last > mask + 1 && s0 < last - (mask + 1))) {
+                tex_entry_free(voodoo, tmu, c);
+                break;
+            }
+        }
+    }
 }
 
 void
@@ -588,8 +839,8 @@ flush_texture_cache(voodoo_t *voodoo, uint32_t dirty_addr, int tmu)
 #if 0
     voodoo_texture_log("Evict %08x %i\n", dirty_addr, sizeof(voodoo->texture_present));
 #endif
-    for (uint8_t c = 0; c < TEX_CACHE_MAX; c++) {
-        if (voodoo->texture_cache[tmu][c].base != -1) {
+    for (int c = 0; c < TEX_CACHE_MAX; c++) {
+        if (voodoo->texture_cache[tmu][c].base != (uint32_t) -1) {
             for (uint8_t d = 0; d < 4; d++) {
                 int addr_start = voodoo->texture_cache[tmu][c].addr_start[d];
                 int addr_end   = voodoo->texture_cache[tmu][c].addr_end[d];
@@ -608,7 +859,8 @@ flush_texture_cache(voodoo_t *voodoo, uint32_t dirty_addr, int tmu)
                         if (voodoo_texture_in_use(voodoo, &voodoo->texture_cache[tmu][c]))
                             wait_for_idle = 1;
 
-                        voodoo->texture_cache[tmu][c].base = -1;
+                        tex_entry_free(voodoo, tmu, c);
+                        break;
                     } else {
                         for (; addr_start <= addr_end; addr_start += (1 << TEX_DIRTY_SHIFT))
                             voodoo->texture_present[tmu][(addr_start & voodoo->texture_mask) >> TEX_DIRTY_SHIFT] = 1;

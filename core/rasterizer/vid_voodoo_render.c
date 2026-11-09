@@ -62,6 +62,7 @@ typedef struct voodoo_state_t {
     int32_t z;
 
     int32_t new_depth;
+    int32_t src_a_save, dest_a_save; /* GLIDULATOR: alpha buffer in the recompiler */
 
     int64_t tmu0_s, tmu0_t;
     int64_t tmu0_w;
@@ -735,9 +736,11 @@ voodoo_tmu_fetch_and_blend(voodoo_t *voodoo, voodoo_params_t *params, voodoo_sta
                 factor_r = factor_g = factor_b = state->tex_a[1];
                 break;
             case TC_MSELECT_DETAIL:
-                factor_r = (params->detail_bias[1] - state->lod) << params->detail_scale[1];
+                factor_r = (params->detail_bias[1] - ((state->lod << 2) + (state->lod_frac[1] >> 6))) << params->detail_scale[1];
                 if (factor_r > params->detail_max[1])
                     factor_r = params->detail_max[1];
+                if (factor_r < 0) /* Glidulator: at least 0, like the board */
+                    factor_r = 0;
                 factor_g = factor_b = factor_r;
                 break;
             case TC_MSELECT_LOD_FRAC:
@@ -784,9 +787,11 @@ voodoo_tmu_fetch_and_blend(voodoo_t *voodoo, voodoo_params_t *params, voodoo_sta
                 factor_a = state->tex_a[1];
                 break;
             case TCA_MSELECT_DETAIL:
-                factor_a = (params->detail_bias[1] - state->lod) << params->detail_scale[1];
+                factor_a = (params->detail_bias[1] - ((state->lod << 2) + (state->lod_frac[1] >> 6))) << params->detail_scale[1];
                 if (factor_a > params->detail_max[1])
                     factor_a = params->detail_max[1];
+                if (factor_a < 0) /* Glidulator: at least 0, like the board */
+                    factor_a = 0;
                 break;
             case TCA_MSELECT_LOD_FRAC:
                 factor_a = state->lod_frac[1];
@@ -841,9 +846,11 @@ voodoo_tmu_fetch_and_blend(voodoo_t *voodoo, voodoo_params_t *params, voodoo_sta
             factor_r = factor_g = factor_b = state->tex_a[0];
             break;
         case TC_MSELECT_DETAIL:
-            factor_r = (params->detail_bias[0] - state->lod) << params->detail_scale[0];
+            factor_r = (params->detail_bias[0] - ((state->lod << 2) + (state->lod_frac[0] >> 6))) << params->detail_scale[0];
             if (factor_r > params->detail_max[0])
                 factor_r = params->detail_max[0];
+            if (factor_r < 0) /* Glidulator: at least 0, like the board */
+                factor_r = 0;
             factor_g = factor_b = factor_r;
             break;
         case TC_MSELECT_LOD_FRAC:
@@ -892,9 +899,11 @@ voodoo_tmu_fetch_and_blend(voodoo_t *voodoo, voodoo_params_t *params, voodoo_sta
             factor_a = state->tex_a[0];
             break;
         case TCA_MSELECT_DETAIL:
-            factor_a = (params->detail_bias[0] - state->lod) << params->detail_scale[0];
+            factor_a = (params->detail_bias[0] - ((state->lod << 2) + (state->lod_frac[0] >> 6))) << params->detail_scale[0];
             if (factor_a > params->detail_max[0])
                 factor_a = params->detail_max[0];
+            if (factor_a < 0) /* Glidulator: at least 0, like the board */
+                factor_a = 0;
             break;
         case TCA_MSELECT_LOD_FRAC:
             factor_a = state->lod_frac[0];
@@ -951,6 +960,7 @@ vj_persp_fetch_dither(voodoo_state_t *state, int tmu)
 }
 #    include "vid_voodoo_codegen_x86.h"
 #endif
+
 
 static void
 voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *state, int ystart, int yend, int odd_even)

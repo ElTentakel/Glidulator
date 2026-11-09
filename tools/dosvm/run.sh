@@ -21,7 +21,8 @@
 #   the demo's GLIDULAT.LOG is then stored next to the picture (<...>.log).
 # NATUREONLY=<n>: start Nature n times (default 1, 0 = not at all);
 #   OVLTEST=<n>: run OVLTEST.EXE n times first (make dosbox-test), output
-#   to <...>.ovltest.
+#   to <...>.ovltest. OVLABORT=1: before that one OVLTEST that ends
+#   without grGlideShutdown (exit guard, platform/dos_ovl/exit_dos.c).
 # CFG="NAME=VALUE;..." writes GLIDULAT.CFG next to Nature.
 # KEYS="w8 2 w1 n ...": keys (QEMU sendkey) with pauses wN (seconds) from
 #   QEMU's start; shot:NAME = screenshot to build/dosvm/run/NAME.png;
@@ -36,6 +37,8 @@
 # KEYLOG="<args>;...": run KEYLOG.EXE (keylog.c: port 60h as seen by an
 #   INT 09h hook, 15 s each; send keys with KEYS); result in <...>.keylog.
 #
+# AUTOEXTRA="cmd;cmd": extra FDAUTO.BAT lines before Nature (e.g. a game on
+#   a second disk given in QEMU_OPTS).
 # QEMU_MACHINE="pc,max-ram-below-4g=3500M" mimics real boards (more memory
 # below 4 GB than QEMU's default of 3 GB).
 # QEMU_OPTS="-enable-kvm -cpu host" uses the real CPU (KVM).
@@ -101,7 +104,9 @@ printf '%s\r\n%sFILES=40\r\nBUFFERS=20\r\nSHELL=\\COMMAND.COM \\ /E:1024 /P=\\FD
     [ -n "${R3PROBE+x}" ] && printf 'cd \\DIAG\r\nR3PROBE %s\r\ncd \\\r\n' "$R3PROBE"
     [ -n "${SMITIME+x}" ] && { printf 'cd \\DIAG\r\n'; echo "$SMITIME" | tr ';' '\n' | while read -r a; do printf 'SMITIME %s\r\n' "$a"; done; printf 'cd \\\r\n'; }
     [ -n "${KEYLOG+x}" ] && { printf 'cd \\DIAG\r\n'; echo "$KEYLOG" | tr ';' '\n' | while read -r a; do printf 'KEYLOG %s\r\n' "$a"; done; printf 'cd \\\r\n'; }
+    [ -n "${AUTOEXTRA:-}" ] && echo "$AUTOEXTRA" | tr ';' '\n' | sed 's/$/\r/'
     printf 'cd \\NATURE\r\n'
+    [ -n "${OVLABORT:-}" ] && printf 'OVLTEST -1\r\ntype OVLTEST.LOG >> ALL.LOG\r\n'
     for i in $(seq "${OVLTEST:-0}"); do printf 'OVLTEST 2\r\ntype OVLTEST.LOG >> ALL.LOG\r\n'; done
     for i in $(seq "${NATUREONLY:-1}"); do printf 'NATURE\r\n'; done
     printf 'echo END\r\n'
@@ -126,7 +131,7 @@ N=$ROOT/build/compat/nature
 OVLFILE=${OVL:-$ROOT/build/ovl/GLIDE2X.OVL}
 mcopy "$N/NATURE.EXE" "$N/NATURE.DAT" "$N/LV-NATUR.S3M" c:/NATURE/
 mcopy "$OVLFILE" c:/NATURE/GLIDE2X.OVL
-[ -n "${OVLTEST:-}" ] && mcopy "$ROOT/build/dosbox/OVLTEST.EXE" c:/NATURE/
+[ -n "${OVLTEST:-}${OVLABORT:-}" ] && mcopy "$ROOT/build/dosbox/OVLTEST.EXE" c:/NATURE/
 # No frame capture from the debug OVL: 16 x 2 MB would fill the 32 MB
 # disk image, after which GLIDULAT.LOG could not grow any more
 printf '0 1 0\r\n' > "$RUN/CAPTURE.CFG"
@@ -183,5 +188,5 @@ mtype c:/NATURE/GLIDULAT.LOG 2>/dev/null | tr -d '\r' > "$OUT.log" || true
 [ -n "${R3PROBE+x}" ] && { mtype c:/DIAG/R3PROBE.TXT 2>/dev/null | tr -d '\r' > "$OUT.r3probe" || true; sed 's/^/  /' "$OUT.r3probe"; }
 [ -n "${SMITIME+x}" ] && { mtype c:/DIAG/SMITIME.TXT 2>/dev/null | tr -d '\r' > "$OUT.smitime" || true; sed 's/^/  /' "$OUT.smitime"; }
 [ -n "${KEYLOG+x}" ] && { mtype c:/DIAG/KEYLOG.TXT 2>/dev/null | tr -d '\r' > "$OUT.keylog" || true; sed 's/^/  /' "$OUT.keylog"; }
-[ -n "${OVLTEST:-}" ] && { mtype c:/NATURE/ALL.LOG 2>/dev/null | tr -d '\r' > "$OUT.ovltest" || true; }
+[ -n "${OVLTEST:-}${OVLABORT:-}" ] && { mtype c:/NATURE/ALL.LOG 2>/dev/null | tr -d '\r' > "$OUT.ovltest" || true; }
 grep -E "Multi-core|Renderer|worker" "$OUT.log" 2>/dev/null | head -20 | sed 's/^/  /' || true

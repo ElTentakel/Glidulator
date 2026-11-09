@@ -5,6 +5,79 @@
 Newest release first. Known issues of the current release:
 [docs/compatibility.md](docs/compatibility.md).
 
+## 0.9.6 (2026-11-09, preview)
+
+- **Glide 3** (`glide3x.dll`, Windows, new in the package): the same
+  renderer behind the Glide 3.x interface, reporting a Voodoo2 with two
+  texture units. Need for Speed: Porsche Unleashed races at 75-81 fps on a
+  Core i7-4790 under Windows 98; Diablo II, Slave Zero and the Operation
+  Flashpoint demo run too. Put it next to the game's renderer DLL like
+  `glide2x.dll`. Clip coordinates (`grCoordinateSpace(GR_CLIP_COORDS)`)
+  are not supported yet; no tested game uses them.
+- **3dfx's Glide 3 logo**: with `GLIDULATOR_SPLASH=original` and
+  `GLIDULATOR_SPLASH_FILE` pointing at 3dfx's splash module
+  `3dfxSpl3.dll` (Voodoo3/Banshee drivers, some games), `glide3x.dll`
+  runs it as 3dfx's own Glide 3 did and it draws its 3D logo through
+  Glidulator.
+- **Fog fixes in the fast renderer** (all platforms): fog taken from the
+  iterated depth (`GR_FOG_WITH_ITERATED_Z`) used the low depth byte, so
+  distant terrain showed bands along its contours (Operation Flashpoint).
+  Fog was also blended one colour step too dark on some pixels (table
+  fog too, for example Redguard). Point-sampled textures with clamping
+  showed texels from the far edge where a coordinate was slightly
+  negative. The fast renderer now matches the reference renderer exactly
+  in these cases.
+- **Faster texture uploads, 4 MB texture memory** (Windows): uploads are
+  copied in one piece and invalidate cached textures once instead of per
+  kilobyte, and the Windows DLLs now report 4 MB texture memory per TMU
+  (DOS keeps 2 MB). Unreal-engine games no longer replace most of their
+  textures every frame: Clive Barker's Undying, first level on a Core
+  i7-4790, 17 -> 26 fps.
+- **Two texture units by default under Windows** (`glide2x.dll`, as
+  `glide3x.dll` already did; `GLIDULATOR_TMUS=1` switches back, DOS keeps
+  one). With one unit Clive Barker's Undying leaves dark rectangles around
+  see-through objects; with two the picture is right and its first level
+  runs at about 37 fps instead of 26, Unreal Tournament's intro about 20 %
+  faster (Core i7-4790).
+- **Larger texture cache**: decoded textures now share a pool per texture
+  unit (24 MB, DOS 8 MB) instead of 32 full-size slots, so small textures
+  such as lightmaps take little room and Unreal-engine games no longer
+  decode nearly every texture again in every frame. Undying, first level
+  on a Core i7-4790: 37 -> 42 fps; Unreal Tournament's intro spends
+  0.1-1.7 ms instead of 4-8 ms per frame decoding. Under DOS the cache
+  needs about 3 MB less memory than before.
+- **Palettes with two texture units**: a palette download now reaches
+  both units, as with 3dfx's Glide. Unreal Tournament's city intro showed
+  a white sky and flickering speckled building fronts with two units.
+- **Alpha buffer** (all platforms): without depth buffering the aux
+  buffer holds alpha, as on Voodoo Graphics. Games that blend with the
+  destination alpha draw correctly now, for example the sprites of Lands
+  of Lore: Guardians of Destiny (black rectangles before).
+- **DOS: write-combining under SBEMU** (HDPMI32i, ring 3): the video
+  memory is now write-combined there too, through the page attribute
+  table. Redguard on a Core i7-4790: 35.9 -> 72 fps, output 9.4 -> 0.4 ms
+  per frame.
+- **DOS: clean exit when a game quits without closing Glide** (for
+  example after a sound card error): the extra cores stop, write-combining
+  and the keyboard are restored and the screen returns to text mode, so
+  DOS stays usable. Before, the machine could hang.
+- **DOS: crash on exit in ring 0 fixed**: the render queue is now drained
+  before the display closes.
+- **DOS: less memory**: the texture cache grows in 1 MB pieces as needed
+  and the frame buffer is no longer rounded up to a power of two. Two
+  texture units (`GLIDULATOR_TMUS=2`) cost about 3 MB more under DOS
+  instead of 13 MB; one stays the default.
+- **Uprising** (Windows 98): the fix for its crash on exit (already in
+  0.9.0) is now confirmed on real hardware.
+- **Debug variant**: recorded frames (format 4) also contain the game's
+  state and texture calls and every downloaded palette (`PALnn.BIN`),
+  so P8 games replay with the right colours; `glide_replay --list` shows
+  the calls; under Windows
+  `CAPTURE.CFG` can record only while Scroll Lock is on.
+- **Detail textures** (`grTexDetailControl`) and **multi-base textures**
+  (`grTexMultibase`, `grTexMultibaseAddress`) are implemented; both were
+  accepted but ignored before.
+
 ## 0.9.5 (2026-11-06, preview)
 
 - **Two texture units** (`GLIDULATOR_TMUS=2`, optional): Glidulator then

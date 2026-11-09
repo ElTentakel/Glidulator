@@ -997,7 +997,7 @@ static int test_gutex(void) {
         return 1;
     }
     /* more than the whole texture memory: must fail. */
-    for (int i = 0; i < 20; i++)
+    for (unsigned i = 0; i < TEX_MEM_BYTES / 131072 + 4; i++)
         guTexAllocateMemory(GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_DISABLE,
                             GR_LOD_256, GR_LOD_256, GR_ASPECT_1x1, 0, 0, 0, 0, 0.0f, FXFALSE);
     if (guTexAllocateMemory(GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_DISABLE,
@@ -2375,6 +2375,43 @@ static int two_tmu_scene(int kind, int threads, int variant, uint16_t *out) {
     return 0;
 }
 
+/* Two TMUs: a palette downloaded through TMU1 must reach TMU0 too (3dfx's
+ * Glide broadcasts palettes; Unreal Tournament draws P8 textures on TMU0
+ * after loading their palette through TMU1). Returns the centre pixel. */
+static int two_tmu_palette(uint16_t *px) {
+    static uint8_t index[32 * 32];
+    static GuTexPalette pal;
+    setenv("GLIDULATOR_TMUS", "2", 1);
+    glide_renderer_force(GLIDE_RENDERER_C, 1);
+    if (open_320x240())
+        return 1;
+    grDitherMode(GR_DITHER_DISABLE);
+    grBufferClear(0, 0, 0);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE,
+                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    memset(index, 1, sizeof index);
+    GrTexInfo info;
+    info.aspectRatio = GR_ASPECT_1x1;
+    info.format      = GR_TEXFMT_P_8;
+    info.smallLod = info.largeLod = GR_LOD_32;
+    info.data                     = index;
+    grTexDownloadMipMap(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &info);
+    memset(&pal, 0, sizeof pal);
+    pal.data[1] = 0x00ff0000u; /* red */
+    grTexDownloadTable(GR_TMU1, GR_TEXTABLE_PALETTE, &pal);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_DECAL);
+    GrVertex v[4];
+    v[0] = vtx(40, 40, 255, 255, 255, 255, 0, 1, 0, 0);
+    v[1] = vtx(200, 40, 255, 255, 255, 255, 0, 1, 256, 0);
+    v[2] = vtx(200, 200, 255, 255, 255, 255, 0, 1, 256, 256);
+    v[3] = vtx(40, 200, 255, 255, 255, 255, 0, 1, 0, 256);
+    grDrawPolygonVertexList(4, v);
+    grBufferSwap(0);
+    *px = g_last_frame[120 * W + 120];
+    return 0;
+}
+
 /* |channel difference| <= 1 for each of R, G, B */
 static int close565(uint16_t a, uint16_t b) {
     int dr = (a >> 11) - (b >> 11), dg = ((a >> 5) & 63) - ((b >> 5) & 63), db = (a & 31) - (b & 31);
@@ -2409,7 +2446,14 @@ static int test_two_tmus(void) {
         fprintf(stderr, "trilinear across the TMUs: %04x, expected ~46 %% red + ~54 %% blue\n", t);
         fail = 1;
     }
-    printf("  TMU0 x TMU1 %04x %04x, ST_DIFF_TMU1 %04x, trilinear %04x\n", a, b, c, t);
+    uint16_t pal_px = 0;
+    if (two_tmu_palette(&pal_px))
+        return 1;
+    if (pal_px != 0xf800) {
+        fprintf(stderr, "palette loaded through TMU1, P8 texture on TMU0: %04x instead of f800\n", pal_px);
+        fail = 1;
+    }
+    printf("  TMU0 x TMU1 %04x %04x, ST_DIFF_TMU1 %04x, trilinear %04x, palette via TMU1 %04x\n", a, b, c, t, pal_px);
     /* JIT and workers draw the same */
     static const int threads[3] = { 1, GLIDE_RENDERER_ONE_WORKER, 4 };
     for (int var = 0; var < 3; var++)
@@ -2442,6 +2486,98 @@ static int test_two_tmus(void) {
     return 0;
 }
 
+
+/* Texture reloads: a download to an address whose texture is already
+ * decoded in the cache must show the new texels at the next draw, also
+ * partial downloads and downloads that wrap at the end of texture memory;
+ * an unrelated cached texture must stay correct. Guards the invalidation
+ * of the decoded-texture cache (flush_texture_range). */
+static void tex_quad(float x0, float y0, float x1, float y1) {
+    GrVertex q[4];
+    q[0] = vtx(x0, y0, 255, 255, 255, 255, 0, 1, 0, 0);
+    q[1] = vtx(x1, y0, 255, 255, 255, 255, 0, 1, 256, 0);
+    q[2] = vtx(x1, y1, 255, 255, 255, 255, 0, 1, 256, 256);
+    q[3] = vtx(x0, y1, 255, 255, 255, 255, 0, 1, 0, 256);
+    grDrawPolygonVertexList(4, q);
+}
+
+static int test_tex_reload(void) {
+    printf("-- Test 27: texture reloads at the same address --\n");
+    enum { RED = 0xf800, GREEN = 0x07e0, BLU = 0x001f, YEL = 0xffe0 };
+    static uint16_t a[64 * 64], b[64 * 64], c[64 * 64];
+    int             fail = 0;
+    if (open_320x240())
+        return 1;
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE,
+                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+    GrTexInfo info = { GR_LOD_64, GR_LOD_64, GR_ASPECT_1x1, GR_TEXFMT_RGB_565, a };
+    FxU32     at = 0x10000, other = 0x20000, wrap = grTexMaxAddress(GR_TMU0) + 8 - 4096;
+    for (int i = 0; i < 64 * 64; i++) {
+        a[i] = RED;
+        b[i] = GREEN;
+        c[i] = YEL;
+    }
+    /* frame 1: red at 'at', yellow at 'other' (both get decoded) */
+    grBufferClear(0, 0, 0);
+    grTexDownloadMipMap(GR_TMU0, at, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, at, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(10, 10, 74, 74);
+    info.data = c;
+    grTexDownloadMipMap(GR_TMU0, other, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, other, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(100, 10, 164, 74);
+    grBufferSwap(1);
+    fail |= check_pixel(40, 40, RED, "first texture");
+    fail |= check_pixel(130, 40, YEL, "second texture");
+    /* frame 2: green over red at the same address, then rows 0..31 blue */
+    grBufferClear(0, 0, 0);
+    info.data = b;
+    grTexDownloadMipMap(GR_TMU0, at, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, at, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(10, 10, 74, 74);
+    for (int i = 0; i < 64 * 32; i++)
+        a[i] = BLU;
+    grTexDownloadMipMapLevelPartial(GR_TMU0, at, GR_LOD_64, GR_LOD_64, GR_ASPECT_1x1, GR_TEXFMT_RGB_565,
+                                    GR_MIPMAPLEVELMASK_BOTH, a, 0, 31);
+    tex_quad(10, 100, 74, 164);
+    info.data = c;
+    grTexSource(GR_TMU0, other, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(100, 10, 164, 74);
+    grBufferSwap(1);
+    fail |= check_pixel(40, 40, GREEN, "reloaded texture");
+    fail |= check_pixel(40, 110, BLU, "partial reload, upper half");
+    fail |= check_pixel(40, 150, GREEN, "partial reload, lower half");
+    fail |= check_pixel(130, 40, YEL, "unrelated texture after the reloads");
+    /* frame 3: a texture that wraps at the end of texture memory (8 KB from
+     * 4 KB before the end), first red, then green */
+    grBufferClear(0, 0, 0);
+    for (int i = 0; i < 64 * 64; i++)
+        a[i] = RED;
+    info.data = a;
+    grTexDownloadMipMap(GR_TMU0, wrap, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, wrap, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(10, 10, 74, 74);
+    grBufferSwap(1);
+    fail |= check_pixel(40, 70, RED, "wrapping texture");
+    grBufferClear(0, 0, 0);
+    info.data = b;
+    grTexDownloadMipMap(GR_TMU0, wrap, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, wrap, GR_MIPMAPLEVELMASK_BOTH, &info);
+    tex_quad(10, 10, 74, 74);
+    grBufferSwap(1);
+    fail |= check_pixel(40, 15, GREEN, "wrapping texture reloaded, before the end");
+    fail |= check_pixel(40, 70, GREEN, "wrapping texture reloaded, after the wrap");
+    grSstWinClose();
+    if (fail) {
+        fprintf(stderr, "Test 27 FAILED\n");
+        return 1;
+    }
+    printf("  ok: reloads, partial reload and wrap-around show the new texels\n");
+    return 0;
+}
+
 int main(void) {
     printf("glidulator smoke test\n");
     setenv("GLIDULATOR_SPLASH", "off", 1); /* the logo is on by default; only test 22 plays it */
@@ -2464,7 +2600,7 @@ int main(void) {
     if (test_demo_triangles() || test_demo_triangles_mipmap())
         return 1;
     if (test_lfb() || test_sst() || test_gutex() || test_fog_ncc() || test_gu_presets() || test_clip() || test_renderer() || test_output_osd() || test_fsaa() || test_fsaa_auto_post() || test_voodoo_filter() ||
-        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither() || test_two_tmus())
+        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither() || test_two_tmus() || test_tex_reload())
         return 1;
 
     grGlideShutdown();

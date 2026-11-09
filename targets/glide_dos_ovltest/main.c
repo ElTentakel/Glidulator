@@ -14,6 +14,9 @@
  * host).
  *
  * Usage: OVLTEST [hold_seconds] [ovl_path]
+ * A negative hold ends the program right after the picture, without
+ * grGlideShutdown and without unloading the OVL, as a game that gives up
+ * (tests the OVL's exit guard, platform/dos_ovl/exit_dos.c).
  */
 
 #include "../../platform/dos_ovl/video.h"
@@ -235,6 +238,15 @@ int main(int argc, char **argv) {
         say(line);
     }
 
+    if (hold < 0) {
+        say("OVLTEST EXIT WITHOUT SHUTDOWN\n");
+        FILE *af = fopen("OVLTEST.LOG", "w");
+        if (af) {
+            fputs(g_log, af);
+            fclose(af);
+        }
+        exit(3);
+    }
     wait_seconds(hold);
     grGlideShutdown();
     le_unload(m);

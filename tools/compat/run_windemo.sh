@@ -19,7 +19,8 @@
 #   WAIT=<s> delay before the keys (default 3), WINVER=<ver> (win98), TRACE=1
 #   trace DLL (make win98-trace, log in GLIDULAT.LOG next to the EXE),
 #   DEBUG=1 debug DLL (make win98-debug), DLL=<file> a given glide2x.dll
-#   (e.g. from build/dist/); WINEDEBUG is passed through
+#   (e.g. from build/dist/), GLIDE3=1 glide3x.dll (Glide 3 programs);
+#   WINEDEBUG is passed through
 #   (default -all, e.g. WINEDEBUG=+relay)
 # Result: <directory>.run/frame_<n>.png, wine.log
 set -eu
@@ -35,6 +36,18 @@ shift 2; [ $# -gt 0 ] && shift; [ $# -gt 0 ] && shift
 W=/usr/lib/i386-linux-gnu/wine
 [ -x "$W/wine" ] || { echo "32-bit Wine missing ($W/wine, package wine32:i386)" >&2; exit 1; }
 
+# GLIDE3=1: glide3x.dll instead (make win98-g3, with TRACE=1 win98-g3-trace)
+G=glide2x
+if [ -n "${GLIDE3:-}" ] && [ -z "${DLL:-}" ]; then
+    G=glide3x
+    if [ -n "${TRACE:-}" ]; then
+        make -C "$ROOT" win98-g3-trace >/dev/null
+        DLL=$ROOT/build/win98_g3_trace/glide3x.dll
+    else
+        make -C "$ROOT" win98-g3 >/dev/null
+        DLL=$ROOT/build/win98_g3/glide3x.dll
+    fi
+fi
 if [ -n "${DLL:-}" ]; then
     DLL=$(realpath "$DLL")    # a given DLL, e.g. from the release package
 elif [ -n "${DEBUG:-}" ]; then
@@ -50,7 +63,7 @@ fi
 RUN=$SRC.run
 rm -rf "$RUN"
 cp -r "$SRC" "$RUN"
-find "$RUN" -iname glide2x.dll -exec rm -f {} +
+find "$RUN" -iname $G.dll -exec rm -f {} +
 cp "$DLL" "$RUN/$(dirname "$EXE")/"
 
 export WINEPREFIX=$ROOT/build/compat/wineprefix WINEARCH=win32 WINELOADER=$W/wine WINESERVER=$W/wineserver WINEDEBUG=${WINEDEBUG:--all}

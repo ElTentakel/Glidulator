@@ -196,6 +196,8 @@ typedef struct {
     uint32_t       color0, color1, chromaKey;
     uint32_t       textureMode[GLIDE_NUM_TMU], tLOD[GLIDE_NUM_TMU], texBaseAddr[GLIDE_NUM_TMU];
     uint32_t       tformat[GLIDE_NUM_TMU];
+    uint32_t       texBaseAddr1[2], texBaseAddr2[2], texBaseAddr38[2]; /* grTexMultibaseAddress */
+    int            detail_max[2], detail_bias[2], detail_scale[2];       /* grTexDetailControl */
     int            clip_left, clip_right, clip_top, clip_bottom;
     glide_sw_state sw;
     GrTexInfo      src[GLIDE_NUM_TMU];
@@ -228,6 +230,14 @@ void GR_EXPORT GLIDE_API grGlideGetState(GrState *state) {
         s.texBaseAddr[t] = g_voodoo.params.texBaseAddr[t];
         s.tformat[t]     = (uint32_t) g_voodoo.params.tformat[t];
         glide_tex_get_source(t, &s.src[t], &s.src_valid[t], &s.src_even_odd[t]);
+    }
+    for (int t = 0; t < 2; t++) {
+        s.texBaseAddr1[t]  = g_voodoo.params.texBaseAddr1[t];
+        s.texBaseAddr2[t]  = g_voodoo.params.texBaseAddr2[t];
+        s.texBaseAddr38[t] = g_voodoo.params.texBaseAddr38[t];
+        s.detail_max[t]    = g_voodoo.params.detail_max[t];
+        s.detail_bias[t]   = g_voodoo.params.detail_bias[t];
+        s.detail_scale[t]  = g_voodoo.params.detail_scale[t];
     }
     s.clip_left    = g_clip_left;
     s.clip_right   = g_clip_right;
@@ -263,6 +273,14 @@ void GR_EXPORT GLIDE_API grGlideSetState(const GrState *state) {
         g_voodoo.params.tLOD[t]        = s.tLOD[t];
         g_voodoo.params.texBaseAddr[t] = s.texBaseAddr[t];
         g_voodoo.params.tformat[t]     = (int) s.tformat[t];
+    }
+    for (int t = 0; t < 2; t++) {
+        g_voodoo.params.texBaseAddr1[t]  = s.texBaseAddr1[t];
+        g_voodoo.params.texBaseAddr2[t]  = s.texBaseAddr2[t];
+        g_voodoo.params.texBaseAddr38[t] = s.texBaseAddr38[t];
+        g_voodoo.params.detail_max[t]    = s.detail_max[t];
+        g_voodoo.params.detail_bias[t]   = s.detail_bias[t];
+        g_voodoo.params.detail_scale[t]  = s.detail_scale[t];
     }
     g_clip_left                    = s.clip_left;
     g_clip_right                   = s.clip_right;

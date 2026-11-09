@@ -38,13 +38,20 @@ extern void *g_lfb_shadow;
  * vid_voodoo_regs.h just does not name it). */
 #define FBZ_Y_ORIGIN (1u << 17)
 
-/* 2 MB per TMU, what grSstQueryHardware() reports (tmuRam = 2, a typical
- * Voodoo Graphics board). Power of two: g_voodoo.texture_mask derives from
- * it. */
-#define TEX_MEM_BYTES (2 * 1024 * 1024)
+/* Texture memory per TMU in MB, what grSstQueryHardware() reports as
+ * tmuRam. Default 4 (Windows DLLs, Linux tools; boards such as the Pure3D or
+ * a 12 MB Voodoo2 had that much): Unreal-engine games (UT, Undying) re-upload
+ * ~12 MB per frame with 2 MB and ~0.4 MB with 4 MB. The DOS builds pass 2
+ * (Makefile), the typical Voodoo Graphics board. Power of two:
+ * g_voodoo.texture_mask derives from it. */
+#ifndef GLIDULATOR_TEXMEM_MB
+#define GLIDULATOR_TEXMEM_MB 4
+#endif
+#define TEX_MEM_BYTES (GLIDULATOR_TEXMEM_MB * 1024 * 1024)
 
 /* Texture units the board reports and emulates (GLIDULATOR_TMUS=1|2,
- * default 1; only on the Voodoo Graphics board, a Rush has one). Read by
+ * default 2 for the Windows DLLs, 1 under DOS and Linux; only on the
+ * Voodoo Graphics board, a Rush has one). Read by
  * glide_tmus_read_cfg() in grSstQueryHardware()/grSstWinOpen(). With two,
  * TMU1 has its own texture memory, tables and cache slots, and the state
  * functions follow 3dfx's Glide for both units (odd/even level split,
@@ -149,6 +156,16 @@ const uint16_t *glide_fsaa_output(void);
  * loading in loading screens. */
 #ifdef GLIDULATOR_TRACE
 extern uint64_t g_perf_tex_us, g_perf_lfb_us;
+/* breakdown of texture work: copy into texture memory, cache invalidation,
+ * bytes and calls; palette/NCC writes; texture cache misses and decoding
+ * (voodoo_use_texture) */
+extern uint64_t g_perf_tex_copy_cyc, g_perf_tex_flush_cyc, g_perf_tex_bytes, g_perf_tex_calls;
+extern uint64_t g_perf_tex_tables, g_perf_tex_misses, g_perf_tex_decode_cyc;
+/* CPU cycle counter for these fine-grained counters: platform_time_us()
+ * costs several microseconds per call under Windows 9x (QueryPerformance-
+ * Counter on the PIT) and would mostly measure itself at ~1000 uploads per
+ * frame. Converted to microseconds once per report (core/osd.c). */
+uint64_t glide_trace_cycles(void);
 #endif
 
 /* Voodoo video filter (GLIDULATOR_VOODOO_FILTER, core/vfilter.c): open and
@@ -194,6 +211,8 @@ void glide_splash_first_frame(const uint16_t *fb);
 void glide_splash_winclose(void);
 void glide_splash_present(uint64_t t_us);
 int  glide_splash_original(void);
+int  glide_splash_module_run(uint32_t hwnd, int width, int height, int ncol, int naux, int color_format);
+void glide_splash_cleanup(void);
 
 /* 5x7 OSD font (core/osd.c): 7 rows, bit 4 = left column; NULL = blank. */
 const uint8_t *glide_osd_glyph(char c);

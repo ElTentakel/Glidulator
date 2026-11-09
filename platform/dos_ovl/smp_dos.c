@@ -1059,6 +1059,7 @@ static void stop_aps(void) {
     wait_us(1000);
     park_in_rom();
     apic_restore(); /* the APIC as found */
+    LOG_SMP("APs stopped", -1);
 #ifdef GLIDULATOR_DEBUG
     {   /* only if platform_worker_failed() has not reported it already */
         int seen = 0;

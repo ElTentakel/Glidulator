@@ -919,7 +919,13 @@ int vid_mode_lost(void) {
 void vid_close(void) {
     if (!g_active)
         return;
+#ifdef GLIDULATOR_TRACE
+    platform_log("Close: VBE mode check\n");
+#endif
     int lost = vid_mode_lost();
+#ifdef GLIDULATOR_TRACE
+    platform_log(lost ? "Close: mode lost\n" : "Close: mode still ours\n");
+#endif
     if (g_bios->wc_off)
         g_bios->wc_off(); /* original MTRRs back before the mode goes */
     if (!lost) {
@@ -927,6 +933,9 @@ void vid_close(void) {
         regs_clear(&r);
         r.eax = g_prev_mode; /* AH=00h: set mode, also after a VBE mode */
         int10(&r);
+#ifdef GLIDULATOR_TRACE
+        platform_log("Close: text mode back\n");
+#endif
     }
 #ifdef GLIDULATOR_TRACE
     else

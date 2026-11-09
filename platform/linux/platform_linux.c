@@ -178,3 +178,19 @@ long platform_read_file(const char *name, size_t offset, void *buf, size_t len) 
     fclose(f);
     return (long) n;
 }
+
+int platform_run_splash_module(const char *path, uint32_t hwnd, int width, int height, int ncol, int naux,
+                               int color_format) {
+    (void) path;
+    (void) hwnd;
+    (void) width;
+    (void) height;
+    (void) ncol;
+    (void) naux;
+    (void) color_format;
+    return 0; /* 3dfx's splash modules are Windows DLLs */
+}
+
+int platform_scroll_lock(void) {
+    return -1;
+}

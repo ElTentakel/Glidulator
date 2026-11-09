@@ -11,8 +11,11 @@ is. It records final design decisions only.
 Game
   |  Glide 2.x calls (grSstWinOpen, grDrawTriangle, ...)
   v
-targets/glide_ovl (DOS, GLIDE2X.OVL)      targets/glide_dll (Windows, glide2x.dll)
+targets/glide_ovl (DOS, GLIDE2X.OVL)      targets/glide_dll (Windows, glide2x.dll, glide3x.dll)
   |  exports, entry point; no own state
+  v
+core/glide3_abi.c  (glide3x.dll only)      Glide 3.x calls -> Glide 2.x calls
+  |
   v
 core/                                      portable, no OS knowledge
   glide_*.c       Glide API -> Voodoo registers ("register driver")
@@ -61,8 +64,10 @@ Notable consequences:
 - Vertex coordinates are 12.4 fixed point and wrap like on the chip. This
   is why games add a "snap bias" to coordinates, and why the `gu*WithClip`
   functions really clip.
-- `grSstQueryHardware` reports a Voodoo Graphics with 2 MB texture memory
-  per TMU, one TMU (two with `GLIDULATOR_TMUS=2`). Games quit if no board
+- `grSstQueryHardware` reports a Voodoo Graphics with 4 MB texture memory
+  per TMU under Windows (2 MB under DOS, the common board), two TMUs under
+  Windows and one under DOS (`GLIDULATOR_TMUS=1|2` overrides). With 2 MB, Unreal-engine games replace most
+  of their textures every frame. Games quit if no board
   is found.
 - With two TMUs, TMU1's output is TMU0's "other" input, as on the board.
   The state functions behave like 3dfx's Glide for both units: textures
@@ -71,20 +76,52 @@ Notable consequences:
   takes TMU0's S/T and W unless the `GR_STWHINT_ST_DIFF_TMU1` /
   `W_DIFF_TMU1` hints say otherwise. With one TMU, even/odd downloads keep
   the unsplit layout and `lodBlend` is ignored.
+- Decoded textures are cached per TMU: up to 1024 textures in a pool that
+  grows by need in 1 MB pieces up to 24 MB (DOS 8 MB). Most DOS games need
+  0.5-2.5 MB of decoded textures per frame (Burnout 4.5 MB), so they keep
+  1-3 MB. Each texture gets as much of the pool as its mip levels need;
+  the least recently used texture of the same size class is replaced, and
+  if a frame needs more of one class than the pool holds, the pool is
+  emptied once and refilled. Unreal-engine games use 100-250 textures per
+  frame; the earlier 32 full-size slots decoded nearly all of them again
+  in every frame.
+- Alpha buffer: without depth buffering the aux buffer holds alpha, as on
+  Voodoo Graphics (`FBZ_ALPHA_ENABLE`, set by `grDepthBufferMode`).
+  Blending reads destination alpha from it, `grColorMask(.., FXTRUE)`
+  writes alpha, `grBufferClear` clears it with its alpha argument. C path
+  and recompiler both implement it (bit-identical).
 - Gamma defaults to 1.3, the value of later 3dfx drivers. Configurable via
   `SST_GAMMA`.
 
 ABI: all 132 Glide 2.x functions and the 14 `pci*` functions of 3dfx's
-runtime are exported under their original decorated names. 103 Glide
-functions are implemented. The rest are rarely used and exported as
-harmless stubs:
+runtime are exported under their original decorated names. Most are
+implemented; the rest are rarely used and exported as harmless stubs:
 - antialiased primitives `grAA*`
 - `guMP*`, `guMovie*`
 - `grSplash`
-- RLE16 and multi-base textures
+- RLE16 textures
 
 Declarations are generated from a clean-room API description
 (`abi/glide2x.api`, `tools/abi/gen_glide2x.py`).
+
+**Glide 3.x** (`glide3x.dll`) is the same core built with
+`-DGLIDULATOR_GLIDE3`: a generated block renames the Glide 2 functions to
+`g2_*`, and `core/glide3_abi.c` implements the 93 Glide 3 exports as
+`g3_*` on top of them (`abi/glide3x.api`, `tools/abi/gen_glide3x.py`).
+Trace, capture and replay therefore work unchanged on the Glide 2 calls.
+- Vertices: `grVertexLayout` builds a table of offsets; each vertex of a
+  draw call is copied into a Glide 2 `GrVertex` (window coordinates,
+  packed or float colour, S/T and Q per TMU). TMU1 without its own S/T
+  takes TMU0's, as the hardware does; the S/T/W hints follow the layout.
+- Level of detail and aspect ratio use Glide 3's numbering (log2) and are
+  converted for the core; fog modes, tables and texture bases likewise.
+- `grGet`/`grGetString` answer like 3dfx's Voodoo2 driver: hardware
+  "Voodoo2", version "3.03", two TMUs (`GLIDULATOR_TMUS=1` overrides), no
+  extensions. `grQueryResolutions` offers 320x200 to 800x600.
+- Not supported yet: clip coordinates (`grCoordinateSpace(GR_CLIP_COORDS)`,
+  `grViewport` and `grDepthRange` are only stored), `grLoadGammaTable`,
+  stipple patterns, and `grAADrawTriangle` draws without edge
+  anti-aliasing.
 
 ## 3. Module formats
 
@@ -96,9 +133,11 @@ Declarations are generated from a clean-room API description
 - The OVL has no C runtime startup. Memory comes from DPMI (`INT 31h`
   0501h) per allocation, and nothing in the OVL relies on CRT
   initialisation.
-- **`glide2x.dll`** is built with mingw-w64 for Windows 4.0. Exports carry
-  3dfx's exact names and mixed casing (`targets/glide_dll/glide2x.def`),
-  libgcc is linked statically, and only `KERNEL32` and `msvcrt` are needed.
+- **`glide2x.dll`** and **`glide3x.dll`** are built with mingw-w64 for
+  Windows 4.0. Exports carry 3dfx's exact names and mixed casing
+  (`targets/glide_dll/glide2x.def`, `glide3x.def`), libgcc is linked
+  statically, and only system DLLs are imported
+  (`KERNEL32`, `USER32`, `GDI32`, `msvcrt`).
 
 ## 4. Rendering paths
 
@@ -323,6 +362,17 @@ very slow.
 - Windows 98 (`wc_win9x.c`) uses the same planner from the DLL through a
   ring-0 call gate. GLQuake on an i7-4790 with VBEMP: 37.6 -> 56.3 fps
   (GDI copy 9-10 ms -> 0.1 ms per frame).
+- Ring 3 under HDPMI32i (needed by SBEMU): `r3_dos.c` reaches ring 0
+  through a temporary call gate in the host's GDT. The MTRR procedure
+  through it (cache off, WBINVD, MTRRs, under the host's paging) froze an
+  i7-4790 in about one call of three, so ring 3 uses PAT instead: with
+  paging the page table entry selects a PAT entry, and PAT WC wins over
+  MTRR UC. `wc_dos.c` points the host's entries of the framebuffer
+  mapping at the unused PAT entry 5 and sets that entry to WC (one WRMSR
+  plus a TLB flush through the gate). Not under VDPMI (no page tables to
+  find the GDT). Redguard on an i7-4790 (SBEMU, 640x480): 35.9 -> 72.0
+  fps, output 9.4 -> 0.4 ms per frame; Nature 42 fps / 17 ms output
+  before.
 
 **Windows** (`platform/win98/platform_win32.c`):
 - GDI `SetDIBitsToDevice`/`StretchDIBits` into an owned, never-activated,
@@ -425,6 +475,19 @@ the monitor emulation, independent of each other; `core/splash.c`,
   validated. Rendering follows the documented behaviour of 3dfx's splash:
   viewport, lighting, materials, highlight pass, projected shadow,
   fog-table fades, 30 frames per second.
+- **Glide 3 splash module** (Windows `glide3x.dll` only): if
+  `GLIDULATOR_SPLASH_FILE` names a file starting with `3dfxSpl`
+  (3dfx's `3dfxSpl3.dll`, "3Dfx Splash Version 1.2"), `grSstWinOpen` loads
+  it like 3dfx's Glide 3 did and calls `_fxSplashInit@24(hWnd, w, h,
+  nColBuffers, nAuxBuffers, colorFormat)`, `_fxSplash@20(0, 0, w, h, 0)`
+  and `_fxSplashShutdown@0`. The module imports 42 functions from
+  `glide3x.dll`, all of which Glidulator exports, so it draws through
+  Glidulator. It refuses fewer than two colour buffers or no aux buffer;
+  Glidulator always has both, so at least 2 and 1 are passed. Glide state
+  is saved with `grGlideGetState` before and restored afterwards, and the
+  framebuffer and texture memory are cleared as after the other logos.
+  If the module fails to load or initialise, the Glidulator animation
+  plays.
 
 ## 8. Diagnostics
 
@@ -437,7 +500,9 @@ The release build contains neither.
 
 **Frame capture and replay**:
 - The debug variant records frames: all clears and triangles with their
-  registers, plus texture memory and tables.
+  registers, plus texture memory and tables. Since format version 4 also
+  the game's state and texture calls (blend, alpha test, depth mask,
+  combine, texture source and downloads) in order between the triangles.
 - `glide_replay` re-renders them on Linux with the same core. It can list
   single triangles and compare render paths and thread counts.
 - Limitation: recording starts with an empty depth buffer. Games that never
@@ -456,11 +521,72 @@ The release build contains neither.
 - The log is flushed to disk for important lines and otherwise once per
   second.
 
-## 9. Known limitations
+## 9. Where the time goes
+
+Measured on a Core i7-4790 (4 cores + HT) unless noted; "replay" means
+`glide_replay` on recorded frames under Linux (32-bit, JIT, one core),
+which isolates the renderer from the game.
+
+**Work per frame, in order of cost:**
+
+1. **Pixel pipeline** (render workers, or the game's core with
+   `GLIDULATOR_THREADS=1`). Compute bound, not memory bound: IPC ~2, L1
+   misses and branch misses ~1 %. Profile of the JIT path (replay, GLQuake
+   with two TMUs / Nature):
+   - generated pixel code 40 % / 36 %. Inside it: texel fetch 60 % (TMU1
+     35 %, TMU0 25 %) / 45 %, colour combine 16 %, fog, alpha, dither and
+     write 16 %, depth test 9-15 %;
+   - perspective-correct texture coordinates (`vj_persp_fetch`, two
+     64x64-bit multiplications and a division per pixel and TMU) 32 % / 15 %;
+   - triangle setup and level of detail per 8-pixel span part
+     (`voodoo_triangle`, two double divisions and a `log2` per part and
+     TMU) 19 % / 33 %. Skipped where it cannot change the picture (one mip
+     level, or the whole triangle provably on the finest level).
+2. **Triangle setup on the game's core**: plane equations for colour,
+   depth, W and S/T/W per TMU, then the render queue (256 entries).
+3. **Texture work on the game's core**: decoding a texture into the
+   cache on first use (P8, 16-bit formats to 32-bit ARGB), copying
+   uploads into texture memory and invalidating cached textures they
+   overlap. Unreal-engine games load hundreds of small lightmaps; since
+   the pooled cache this costs 0.1-1.7 ms per frame in Unreal
+   Tournament's intro (was 4-8 ms).
+4. **Output** (game's core): converting the 16-bit frame for the screen,
+   optional filters and OSD, then the copy to video memory -- by GDI in
+   the display driver under Windows, directly to the linear framebuffer
+   under DOS. Cost depends almost only on the video memory type (below).
+
+**Where the game waits** (`glide_mt_idle`): at `grBufferSwap` (all
+triangles of the frame drawn), `grBufferClear`, every `grLfbLock` and
+`grLfbWriteRegion`, when the texture cache must reuse an entry a worker
+still draws with, and during vsync (`GLIDULATOR_VSYNC`). Games that read
+or write the framebuffer every frame (motion blur, software cursors)
+therefore lose the overlap between game logic and rendering.
+
+**What each optimisation brings** (frames per second, higher is better):
+
+| Optimisation | Windows 98 | DOS |
+|---|---|---|
+| Write-combining for the framebuffer (`GLIDULATOR_WC`, default on; VBEMP and other generic drivers) | GLQuake 640x480: 37.6 -> 56 fps; GDI copy 9-10 ms -> 0.1 ms per frame | Nature, 800x600 output: output 17.1 -> 2.8 ms per frame, 26 -> 49 fps at the same spot (at 640x480 about two thirds of these output times) |
+| JIT instead of C pixel path (needs SSE2) | renderer 1.8-1.9 times as fast (replay) | same; needs ring 0 or a DPMI host that enables SSE |
+| Multi-core (`GLIDULATOR_THREADS=auto`) | GLQuake 640x480 (0.9.1): 1 core 15.4 fps, 4 cores 38.8 fps; Windows 98 needs `GLSMP.VXD` | Nature 800x600: 2 cores 75 -> 98 fps, 4 cores 125 -> 143 fps with the game's core drawing too |
+| Hyper-threading (`GLIDULATOR_HT=1`) | no gain | slower (4C+HT: 114 vs 88 fps) |
+| Two TMUs (default under Windows) | GLQuake 640x480 timedemo: 76.6 -> 93.8 fps; Unreal Tournament intro 640x480: 40-46 -> 51-55 fps; Undying 800x600: 26 -> 37 fps | not measured; costs about 3 MB more memory (up to 10 MB) |
+| Level of detail only where needed (0.9.5) | GLQuake 640x480: 67.5 -> 76.0 fps | Nature: 104 -> 117 fps |
+| 4 MB texture memory per TMU (Windows) | Undying: uploads 12 MB -> 0.4 MB per frame, 22 -> 26 fps | -- (2 MB) |
+| Pooled texture cache | Undying: 37 -> 42 fps; UT intro decode 4-8 -> 0.1-1.7 ms | smaller memory footprint |
+| Ring 0 instead of ring 3 under DOS | -- | Nature: render 9.1 -> 7.1 ms; before write-combining through the call gate, ring 3 also had no write-combining (42 fps vs 128 fps) |
+
+Image options cost extra: the Voodoo video filter about 0.3 ms per frame
+of output at 640x480 (GLQuake 69.1 -> 64.8 fps), FSAA 2x halves the frame
+rate (GLQuake 38.8 -> 19.4 fps), and vsync caps at the refresh rate.
+
+## 10. Known limitations
 
 - Static Glide: games that link Glide statically or program the hardware
   directly cannot be redirected.
-- One TMU by default (two with `GLIDULATOR_TMUS=2`); no alpha planes.
+- Two TMUs by default under Windows, one under DOS (`GLIDULATOR_TMUS`).
+- Glide 3: no clip coordinates yet (see section 2); no DOS version of the
+  Glide 3 layer.
 - `grLfbLock` with `GR_ORIGIN_LOWER_LEFT` returns an unflipped pointer.
 - No vsync on Windows yet, and no page flipping on DOS.
 - Under DOSBox, the emulated S3 BIOS shows mode 640x400x32 black. This is

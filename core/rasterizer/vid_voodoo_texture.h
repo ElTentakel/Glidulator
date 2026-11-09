@@ -35,5 +35,8 @@ void voodoo_recalc_tex3(voodoo_t *voodoo, int tmu);
 void voodoo_use_texture(voodoo_t *voodoo, voodoo_params_t *params, int tmu);
 void voodoo_tex_writel(uint32_t addr, uint32_t val, void *priv);
 void flush_texture_cache(voodoo_t *voodoo, uint32_t dirty_addr, int tmu);
+void flush_texture_range(voodoo_t *voodoo, uint32_t addr, uint32_t n, int tmu);
+/* GLIDULATOR: empties one TMU's texture cache (drawers must be idle) */
+void voodoo_tex_cache_reset(voodoo_t *voodoo, int tmu);
 
 #endif /* VIDEO_VOODOO_TEXTURE_H*/
