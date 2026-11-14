@@ -490,6 +490,18 @@ static void log_window(const char *what, HWND w);
  * away from is not in front and stays minimized. */
 #define RESTORE_TIMER 1
 
+/* The last frame as converted for the screen (g_outbuf) and its format,
+ * for WM_PAINT: a game that waits for input without drawing (Scorched
+ * Planet's title) still gets its picture back when our window is raised
+ * above the game's own. */
+static struct {
+    BITMAPINFOHEADER h;
+    DWORD            masks[3];
+} g_out_bmi;
+static int g_out_valid;
+
+static void present_outbuf(HDC dc, const RECT *rc, int *px, int *py, int *prw, int *prh);
+
 static void restore_program_window(void) {
     HWND w = GetActiveWindow();
     if (!w || !IsIconic(w) || w != GetForegroundWindow())
@@ -510,8 +522,13 @@ static LRESULT CALLBACK own_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCHITTEST)
         return HTTRANSPARENT;
     if (msg == WM_PAINT) {
-        ValidateRect(hwnd, NULL);
-        g_need_border = 1;
+        PAINTSTRUCT ps;
+        RECT        rc;
+        HDC         dc = BeginPaint(hwnd, &ps);
+        g_need_border  = 1;
+        if (dc && g_out_valid && g_outbuf && GetClientRect(hwnd, &rc) && rc.right > 0 && rc.bottom > 0)
+            present_outbuf(dc, &rc, NULL, NULL, NULL, NULL);
+        EndPaint(hwnd, &ps);
         return 0;
     }
     if (msg == WM_TIMER && wp == RESTORE_TIMER) {
@@ -593,6 +610,8 @@ static LRESULT CALLBACK trace_hook_proc(int code, WPARAM wp, LPARAM lp) {
  * re-asserted every 30 frames because some programs raise their own
  * window (GLQuake in windowed mode, and Wine's X stacking), and shown
  * again should anything hide it. */
+static int g_output_hidden; /* platform_show_output(0): VGA passthrough */
+
 static void keep_on_top(void) {
     static unsigned frames;
 #ifdef GLIDULATOR_TRACE
@@ -620,7 +639,7 @@ static void keep_on_top(void) {
         }
     }
 #endif
-    if (frames++ % 30)
+    if (frames++ % 30 || g_output_hidden)
         return;
     if (!IsWindowVisible(g_hwnd)) {
 #ifdef GLIDULATOR_TRACE
@@ -793,7 +812,9 @@ void platform_display_open(int w, int h) {
         g_trace_hook = SetWindowsHookExA(WH_CALLWNDPROC, trace_hook_proc, NULL, GetCurrentThreadId());
     wd_start();
 #endif
-    g_hwnd = create_own_window();
+    g_output_hidden = 0;
+    g_out_valid     = 0;
+    g_hwnd          = create_own_window();
     while (ShowCursor(FALSE) >= 0 && g_cursor_hidden < 100)
         g_cursor_hidden++;
     g_cursor_hidden++; /* the last call counted as well */
@@ -808,6 +829,33 @@ void platform_display_open(int w, int h) {
         uint32_t need = (uint32_t) GetSystemMetrics(SM_CXSCREEN) * (uint32_t) GetSystemMetrics(SM_CYSCREEN) *
                         ((bpp + 7) / 8);
         wc_win9x_on(need);
+    }
+}
+
+/* VGA passthrough (Glide 2.1.1): like the Voodoo's video switch, the
+ * program's window shows while the Glide picture is hidden -- with the
+ * mouse pointer, which 2D menus need. */
+void platform_show_output(int on) {
+    if (!g_hwnd)
+        return;
+    if (on) {
+        /* Also when it was not hidden: Scorched Planet shows its own window
+         * right before (it then lay above ours) and draws nothing until a
+         * key is pressed, so keep_on_top() would not run. */
+        ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        if (g_output_hidden) {
+            while (ShowCursor(FALSE) >= 0 && g_cursor_hidden < 100)
+                g_cursor_hidden++;
+            g_cursor_hidden++;
+        }
+        g_output_hidden = 0;
+    } else if (!g_output_hidden) {
+        g_output_hidden = 1;
+        ShowWindow(g_hwnd, SW_HIDE);
+        for (; g_cursor_hidden > 0; g_cursor_hidden--)
+            ShowCursor(TRUE);
     }
 }
 
@@ -883,11 +931,29 @@ static void fill_border(HDC dc, const RECT *rc, int x, int y, int rw, int rh) {
 }
 
 /* src32: source XRGB8888 (video filter), otherwise RGB565 */
+static void present_outbuf(HDC dc, const RECT *rc, int *px, int *py, int *prw, int *prh) {
+    int w = (int) g_out_bmi.h.biWidth, h = -(int) g_out_bmi.h.biHeight, x, y, rw, rh;
+    output_rect(g_scale, w, h, rc->right, rc->bottom, &x, &y, &rw, &rh);
+    if (g_need_border) {
+        fill_border(dc, rc, x, y, rw, rh);
+        g_need_border = 0;
+    }
+    if (rw != w || rh != h) {
+        SetStretchBltMode(dc, COLORONCOLOR);
+        StretchDIBits(dc, x, y, rw, rh, 0, 0, w, h, g_outbuf, (BITMAPINFO *) &g_out_bmi, DIB_RGB_COLORS, SRCCOPY);
+    } else {
+        SetDIBitsToDevice(dc, x, y, (DWORD) w, (DWORD) h, 0, 0, 0, (UINT) h, g_outbuf, (BITMAPINFO *) &g_out_bmi,
+                          DIB_RGB_COLORS);
+    }
+    if (px) {
+        *px  = x;
+        *py  = y;
+        *prw = rw;
+        *prh = rh;
+    }
+}
+
 static void blit_any(const void *pixels, int w, int h, int stride_bytes, int src32) {
-    struct {
-        BITMAPINFOHEADER h;
-        DWORD            masks[3];
-    } bmi;
     RECT rc;
     HDC  dc;
     int  bpp, x, y, rw, rh;
@@ -912,11 +978,11 @@ static void blit_any(const void *pixels, int w, int h, int stride_bytes, int src
     if (!dc)
         return;
     bpp = GetDeviceCaps(dc, BITSPIXEL) * GetDeviceCaps(dc, PLANES);
-    memset(&bmi, 0, sizeof bmi);
-    bmi.h.biSize   = sizeof bmi.h;
-    bmi.h.biWidth  = w;
-    bmi.h.biHeight = -h; /* top-down */
-    bmi.h.biPlanes = 1;
+    memset(&g_out_bmi, 0, sizeof g_out_bmi);
+    g_out_bmi.h.biSize   = sizeof g_out_bmi.h;
+    g_out_bmi.h.biWidth  = w;
+    g_out_bmi.h.biHeight = -h; /* top-down */
+    g_out_bmi.h.biPlanes = 1;
     if (bpp == 15 || bpp == 16) {
         /* 16-bit screen: 565 stays 565, GDI converts nothing */
         for (int j = 0; j < h; j++) {
@@ -932,11 +998,11 @@ static void blit_any(const void *pixels, int w, int h, int stride_bytes, int src
                 for (int i = 0; i < w; i++)
                     dst[i] = g_conv16[((const uint16_t *) row)[i]];
         }
-        bmi.h.biBitCount    = 16;
-        bmi.h.biCompression = BI_BITFIELDS;
-        bmi.masks[0]        = 0xf800;
-        bmi.masks[1]        = 0x07e0;
-        bmi.masks[2]        = 0x001f;
+        g_out_bmi.h.biBitCount    = 16;
+        g_out_bmi.h.biCompression = BI_BITFIELDS;
+        g_out_bmi.masks[0]        = 0xf800;
+        g_out_bmi.masks[1]        = 0x07e0;
+        g_out_bmi.masks[2]        = 0x001f;
     } else {
         for (int j = 0; j < h; j++) {
             const uint8_t *row = (const uint8_t *) pixels + (size_t) j * (size_t) stride_bytes;
@@ -950,24 +1016,14 @@ static void blit_any(const void *pixels, int w, int h, int stride_bytes, int src
                 for (int i = 0; i < w; i++)
                     dst[i] = g_conv32[((const uint16_t *) row)[i]];
         }
-        bmi.h.biBitCount    = 32;
-        bmi.h.biCompression = BI_RGB;
+        g_out_bmi.h.biBitCount    = 32;
+        g_out_bmi.h.biCompression = BI_RGB;
     }
 #ifdef GLIDULATOR_TRACE
     t1 = platform_time_us();
 #endif
-    output_rect(g_scale, w, h, rc.right, rc.bottom, &x, &y, &rw, &rh);
-    if (g_need_border) {
-        fill_border(dc, &rc, x, y, rw, rh);
-        g_need_border = 0;
-    }
-    if (rw != w || rh != h) {
-        SetStretchBltMode(dc, COLORONCOLOR);
-        StretchDIBits(dc, x, y, rw, rh, 0, 0, w, h, g_outbuf, (BITMAPINFO *) &bmi, DIB_RGB_COLORS, SRCCOPY);
-    } else {
-        SetDIBitsToDevice(dc, x, y, (DWORD) w, (DWORD) h, 0, 0, 0, (UINT) h, g_outbuf, (BITMAPINFO *) &bmi,
-                          DIB_RGB_COLORS);
-    }
+    g_out_valid = 1;
+    present_outbuf(dc, &rc, &x, &y, &rw, &rh);
     ReleaseDC(g_hwnd, dc);
 #ifdef GLIDULATOR_TRACE
     trace_timing(t0, t1, platform_time_us(), bpp, x, y, rw, rh);

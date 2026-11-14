@@ -5,11 +5,15 @@
  * independent axes:
  *   - Pixel pipeline: the C interpreter from 86Box (always available) or
  *     the JIT, which generates SSE2 code per render-state combination.
+ *     Both are bit-identical to the board. "fast" is the JIT with
+ *     perspective-correct texturing exact only every 16 pixels and linear
+ *     in between (voodoo_t.fast_persp): not bit-identical, by design;
+ *     never chosen by "auto"; without the JIT it falls back to C.
  *   - Threads: 1 = render synchronously on the calling core; n >= 2 = n
  *     workers on OTHER cores split every triangle by scanline (line y
  *     belongs to worker y % n, core/render_mt.c) while the game continues.
  * Settings via platform_get_config():
- *   GLIDULATOR_RENDERER = auto | c | jit    (default auto)
+ *   GLIDULATOR_RENDERER = auto | c | jit | fast   (default auto)
  *   GLIDULATOR_THREADS  = auto | 1 | 2 ...  (default auto)
  * Anything unavailable silently falls back to the next best choice
  * (ultimately C on one thread); trace variants log the result. */
@@ -17,6 +21,7 @@
 typedef enum {
     GLIDE_RENDERER_C = 0,
     GLIDE_RENDERER_JIT,
+    GLIDE_RENDERER_FAST,
     GLIDE_RENDERER_COUNT
 } glide_renderer_kind;
 
@@ -30,7 +35,7 @@ typedef enum {
 /* GLIDULATOR_THREADS=auto under OS threads (platform_smp_mode "THREADS") */
 #define GLIDE_MT_AUTO_THREADS 4
 
-/* "c", "jit" */
+/* "c", "jit", "fast" */
 const char *glide_renderer_name(int kind);
 /* Name -> kind; "auto" -> GLIDE_RENDERER_AUTO, otherwise GLIDE_RENDERER_UNKNOWN. */
 int glide_renderer_parse(const char *s);

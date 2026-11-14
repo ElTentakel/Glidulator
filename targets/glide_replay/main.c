@@ -12,17 +12,26 @@
  *     --only N          draw only triangle N (clears stay)
  *     --upto N          draw only triangles 0..N
  *     --point           point sampling instead of the recorded filter
- *     --renderer R      render path c|jit|auto (glidulator/renderer.h)
+ *     --renderer R      render path c|jit|fast|auto (glidulator/renderer.h)
  *     --threads N       render threads (default: auto)
  *     --compare         render the frame with every available path and
  *                       compare colour and depth buffer pixel-exactly with
- *                       the C path (exit code 2 on a difference)
+ *                       the C path (exit code 2 on a difference); the
+ *                       fast path is compared by its deviation from C
+ *                       (pixels, largest step, PSNR) and must give the
+ *                       same picture with every thread count
+ *     --compare-fast    only the fast path against C (sweeps,
+ *                       tools/compat/fastcheck.sh)
+ *     --lod-dither      LOD dither on every perspective-textured TMU (as
+ *                       GLIDULATOR_LOD_DITHER=1 in a game)
  *     --difftri         draw every triangle from the same starting state
  *                       with C and with JIT, list differing ones with their
  *                       mode registers (JIT debugging)
  *     --bench N         render the frame N times, print time per run
  *                       (meaningful only without sanitizers: make bench)
- * All GLIDULATOR_* settings apply (e.g. FSAA, video filter).
+ * GLIDULATOR_* settings that act on the output apply (e.g. FSAA, video
+ * filter); those that change registers (LOD dither) do not, see
+ * --lod-dither.
  */
 
 #include "glidulator/capture.h"
@@ -124,6 +133,11 @@ static GrScreenResolution_t res_of(uint32_t w, uint32_t h) {
     return GR_RESOLUTION_800x600;
 }
 
+/* --lod-dither: LOD dither (textureMode bit 4) on every perspective-
+ * textured TMU, like GLIDULATOR_LOD_DITHER=1 in a game (the recording
+ * holds the registers, so that setting does not apply here). */
+static int g_force_lod_dither;
+
 static void apply_regs(const glide_capture_cmd *c, int point) {
     g_voodoo.params.fbzMode        = c->reg[CAP_FBZMODE];
     g_voodoo.params.fbzColorPath   = c->reg[CAP_FBZCOLORPATH];
@@ -132,6 +146,8 @@ static void apply_regs(const glide_capture_cmd *c, int point) {
     g_voodoo.params.textureMode[0] = c->reg[CAP_TEXTUREMODE];
     if (point)
         g_voodoo.params.textureMode[0] &= ~6u;
+    if (g_force_lod_dither && (g_voodoo.params.textureMode[0] & 1))
+        g_voodoo.params.textureMode[0] |= 1u << 4;
     g_voodoo.params.tLOD[0]        = c->reg[CAP_TLOD];
     g_voodoo.params.texBaseAddr[0] = c->reg[CAP_TEXBASEADDR];
     g_voodoo.params.tformat[0]     = (c->reg[CAP_TEXTUREMODE] >> 8) & 0xf;
@@ -158,6 +174,8 @@ static void apply_regs(const glide_capture_cmd *c, int point) {
         g_voodoo.params.textureMode[1] = c->reg[CAP_TEXTUREMODE1];
         if (point)
             g_voodoo.params.textureMode[1] &= ~6u;
+        if (g_force_lod_dither && (g_voodoo.params.textureMode[1] & 1))
+            g_voodoo.params.textureMode[1] |= 1u << 4;
         g_voodoo.params.tLOD[1]        = c->reg[CAP_TLOD1];
         g_voodoo.params.texBaseAddr[1] = c->reg[CAP_TEXBASEADDR1];
         g_voodoo.params.tformat[1]     = (c->reg[CAP_TEXTUREMODE1] >> 8) & 0xf;
@@ -548,9 +566,65 @@ static int run_with(int kind, int threads, const glide_capture_header *h, const 
     return tri;
 }
 
+/* --compare-fast: only C and the fast renderer (one worker, 1 thread, all
+ * threads), for a sweep over many recordings */
+static int g_fast_only;
+
+/* --compare for the fast renderer: not bit-identical to C by design, so
+ * report how far the colour buffer is from C (RGB565 values differing,
+ * largest difference of a channel scaled to 8 bits, PSNR), and require
+ * the same picture with every thread count. Returns 2 on a thread
+ * mismatch. */
+static int compare_fast(const glide_capture_header *h, const glide_capture_cmd *cmds, const uint8_t *start,
+                        size_t fb_bytes, const uint8_t *ref, int only, int upto, int point) {
+    size_t    npx   = (size_t) g_aux_offset / 2;
+    uint16_t *first = malloc(npx * 2);
+    int       rc    = 0;
+    int max = glide_renderer_max_threads();
+    for (int t = 0; t <= max; t++) {
+        int tt = t ? t : GLIDE_RENDERER_ONE_WORKER;
+        if (g_fast_only && t != 0 && t != 1 && t != max)
+            continue;
+        run_with(GLIDE_RENDERER_FAST, tt, h, cmds, start, fb_bytes, 0, only, upto, point, t != 1 ? -8 : 1);
+        const uint16_t *a = (const uint16_t *) ref, *b = (const uint16_t *) g_voodoo.fb_mem;
+        if (t == 0) {
+            size_t diff = 0, big = 0;
+            int    maxd = 0;
+            double se   = 0;
+            for (size_t p = 0; p < npx; p++) {
+                int ca[3] = { (a[p] >> 11) << 3, ((a[p] >> 5) & 63) << 2, (a[p] & 31) << 3 };
+                int cb[3] = { (b[p] >> 11) << 3, ((b[p] >> 5) & 63) << 2, (b[p] & 31) << 3 };
+                int m     = 0;
+                for (int c = 0; c < 3; c++) {
+                    int d = ca[c] > cb[c] ? ca[c] - cb[c] : cb[c] - ca[c];
+                    se += (double) d * d;
+                    if (d > m)
+                        m = d;
+                }
+                diff += m > 0;
+                big += m > 16;
+                if (m > maxd)
+                    maxd = m;
+            }
+            double mse = se / (3.0 * (double) npx);
+            printf("compare fast (worker) against c: %.2f %% of pixels differ, %.3f %% by more than 16, largest %d, "
+                   "PSNR %.1f dB\n",
+                   100.0 * (double) diff / (double) npx, 100.0 * (double) big / (double) npx, maxd,
+                   mse > 0 ? 10.0 * log10(255.0 * 255.0 / mse) : 99.0);
+            memcpy(first, b, npx * 2);
+        } else if (memcmp(first, b, npx * 2)) {
+            printf("compare fast threads %d: differs from one worker\n", t);
+            rc = 2;
+        } else
+            printf("compare fast threads %d: same as one worker%s\n", t, lines_str());
+    }
+    free(first);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc < 4) {
-        fprintf(stderr, "Usage: %s <dir> <CAPnn.BIN> <out.png> [--list] [--only N] [--upto N] [--point] [--renderer R] [--threads N] [--compare] [--bench N]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <dir> <CAPnn.BIN> <out.png> [--list] [--only N] [--upto N] [--point] [--renderer R] [--threads N] [--compare] [--compare-fast] [--bench N] [--lod-dither]\n", argv[0]);
         return 1;
     }
     int list = 0, only = -1, upto = -1, point = 0, compare = 0, bench = 0, difftri = 0, texstats = 0;
@@ -572,8 +646,12 @@ int main(int argc, char **argv) {
             }
         } else if (!strcmp(argv[i], "--threads") && i + 1 < argc)
             threads = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--lod-dither"))
+            g_force_lod_dither = 1;
         else if (!strcmp(argv[i], "--compare"))
             compare = 1;
+        else if (!strcmp(argv[i], "--compare-fast"))
+            compare = g_fast_only = 1;
         else if (!strcmp(argv[i], "--difftri"))
             difftri = 1;
         else if (!strcmp(argv[i], "--texstats"))
@@ -704,6 +782,12 @@ int main(int argc, char **argv) {
                 printf("compare %-4s: not available\n", glide_renderer_name(k));
                 continue;
             }
+            if (k == GLIDE_RENDERER_FAST) {
+                rc |= compare_fast(h, cmds, start, fb_bytes, ref, only, upto, point);
+                continue;
+            }
+            if (g_fast_only)
+                continue;
             /* t = 0 stands for one worker (GLIDE_RENDERER_ONE_WORKER) */
             for (int t = 0; t <= glide_renderer_max_threads(); t++) {
                 int tt = t ? t : GLIDE_RENDERER_ONE_WORKER;

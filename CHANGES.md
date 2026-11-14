@@ -5,6 +5,35 @@
 Newest release first. Known issues of the current release:
 [docs/compatibility.md](docs/compatibility.md).
 
+## 0.9.7 (2026-11-14, preview)
+
+- **Glide 2.1.1** (`glide.dll`, Windows, new): the interface of the first
+  Voodoo Graphics games, which load `glide.dll` instead of `glide2x.dll`.
+  Same core as `glide2x.dll`, plus `grSstOpen`, the VGA passthrough
+  (`grSstPassthruMode`: the game's own window shows, e.g. for intro
+  videos) and the lock-free LFB access of that time (`grLfbBegin`,
+  `grLfbGetWritePtr`, `grLfbWriteMode`, `grLfbBypassMode`, ...). LFB
+  writes go through the pixel pipeline unless the game turns on the
+  bypass, so chroma key, alpha test and blending apply as on the board.
+  The demos of Scorched Planet (cockpit over the 3D view, 84-97 fps on a
+  Core i7-4790 under Windows 98), Pandemonium! and CyberGladiators run.
+- **Windows NT 3.51 and 4.0** are now supported platforms (reported
+  working by a user): the Windows DLLs render with threads there, without
+  write-combining and, since these versions do not save SSE registers,
+  with the C path instead of the JIT. Windows NT 3.51 has no
+  `msvcrt.dll`; copy one next to the game.
+- Trace variants log a failed `guTexAllocateMemory` (texture memory full).
+- **Fast renderer** (`GLIDULATOR_RENDERER=fast`, Windows and DOS, needs
+  SSE2): perspective-correct texturing exact every 16 pixels, linear in
+  between, as in Quake's software renderer. Not pixel-exact (textures may
+  shift by a fraction of a texel), never chosen automatically. GLQuake
+  replay 35 % faster; on a Core 2 Duo E8400 Half-Life 31.8 -> 38.1 fps
+  (Voodoo filter and LOD dither on), Need for Speed: Porsche Unleashed
+  22.2 -> 27.7 fps.
+- **Voodoo video filter faster** on Windows: computed with SSE2, 16 pixels
+  at a time, same picture. Half-Life on a Core 2 Duo E8400 with the filter:
+  31.8 -> 34.8 fps (filter 4.6 -> 1.7 ms per frame).
+
 ## 0.9.6 (2026-11-09, preview)
 
 - **Glide 3** (`glide3x.dll`, Windows, new in the package): the same

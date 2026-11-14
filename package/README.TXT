@@ -8,8 +8,9 @@ but still has known issues (see below). Reports are welcome.
 
 WHAT IT IS
   A software implementation of the 3dfx Voodoo Graphics accelerator and
-  its Glide 2.x and 3.x programming interfaces for MS-DOS and Windows
-  95/98/ME.
+  its Glide 2.x and 3.x programming interfaces for MS-DOS, Windows
+  95/98/ME and Windows NT 3.51/4.0 (NT 3.51: copy an MSVCRT.DLL, e.g.
+  from Windows 98 or NT 4.0, next to the game).
   Drop one file next to a late-90s Glide game, and it renders through
   Glidulator instead of a Voodoo card. Under plain DOS and Windows
   95/98/ME it puts the other CPU cores to work as additional render units.
@@ -30,8 +31,9 @@ BUILT ON THE WORK OF OTHERS
 
 CONTENTS
   BIN\GLIDE2X.OVL        Glide for DOS games (release variant)
-  BIN\GLIDE2X.DLL        Glide for Windows 9x games (release variant)
+  BIN\GLIDE2X.DLL        Glide for Windows 9x and NT games (release variant)
   BIN\GLIDE3X.DLL        Glide 3 for Windows games with a Glide 3 renderer
+  BIN\GLIDE.DLL          Glide 2.1.1 for the first Voodoo games (1996)
   BIN\GLSMP.VXD          Windows 9x multi-core helper, next to the DLL
   BIN\TRACE\             Trace variant: writes GLIDULAT.LOG (performance)
   BIN\DEBUG\             Debug variant: detailed log, crash handling
@@ -50,7 +52,8 @@ INSTALLATION
             game's own file) and start the game with its 3Dfx option.
             Games with a Glide 3 renderer (for example Need for Speed:
             Porsche Unleashed) load BIN\GLIDE3X.DLL instead; put it next
-            to the game's renderer DLL the same way.
+            to the game's renderer DLL the same way. The first Voodoo
+            games (Scorched Planet, Pandemonium!) load BIN\GLIDE.DLL.
             Copy BIN\GLSMP.VXD next to it to render on several CPU cores
             (loaded only while the game runs, nothing is installed).
             Keep a game's 3dfx MiniGL (OPENGL32.DLL); it calls Glide.
@@ -64,18 +67,16 @@ REQUIREMENTS
   the best picture, otherwise VGA 320x200. DOS games bring their own
   DOS/4GW.
 
-NEW IN 0.9.6
-  - Glide 3 (BIN\GLIDE3X.DLL): Need for Speed: Porsche Unleashed (75-81
-    frames per second, Windows 98, Core i7-4790), Diablo II, Slave Zero,
-    Operation Flashpoint. Can show 3dfx's Glide 3 logo (3dfxSpl3.dll).
-  - Unreal-engine games: 4 MB texture memory, two texture units by
-    default under Windows, faster texture uploads, larger texture cache.
-    Clive Barker's Undying, first level: 17 -> 42 frames per second.
-  - DOS: write-combining also under SBEMU (Redguard 35.9 -> 72 frames per
-    second), clean exit when a game quits without closing Glide, less
-    memory (two texture units: 3 MB more instead of 13 MB).
-  - Alpha buffer (Lands of Lore: Guardians of Destiny), detail and
-    multi-base textures, exact fog in the fast renderer.
+NEW IN 0.9.7
+  - Glide 2.1.1 (BIN\GLIDE.DLL) for the first Voodoo games: Scorched
+    Planet (84-97 frames per second, Windows 98, Core i7-4790),
+    Pandemonium!, CyberGladiators.
+  - Windows NT 3.51 and 4.0 supported (NT 3.51: MSVCRT.DLL next to the
+    game).
+  - Fast renderer (GLIDULATOR_RENDERER=fast, optional, needs SSE2):
+    not pixel-exact, Half-Life on a Core 2 Duo E8400 31.8 -> 38.1 frames
+    per second.
+  - Voodoo video filter with SSE2 under Windows: same picture, faster.
 
 KNOWN ISSUES
   - DOS: some machines with a lot of RAM refuse DOS/4GW games with
@@ -87,6 +88,11 @@ KNOWN ISSUES
     one tester's machine. Without EMM386, or with HDPMI32i, it loads.
   - Glide functions without effect: grAA* (anti-aliased primitives),
     guMP*, guTexCreateColorMipMap. No tested title uses them.
+  - GLIDE.DLL: guFbReadRegion/guFbWriteRegion do nothing; no tested
+    game uses them.
+  - Windows NT 3.51/4.0: rendering without write-combining and without
+    the JIT, so slower than Windows 98 on the same PC. Reported working
+    by a user; checked here in virtual machines only.
   - GLIDE3X.DLL: clip coordinates (grCoordinateSpace with
     GR_CLIP_COORDS) are not supported yet; no tested game uses them.
   - Unreal Tournament with two texture units (the Windows default) draws

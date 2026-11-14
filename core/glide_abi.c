@@ -460,6 +460,7 @@ void glide_splash_cleanup(void) {
  * alpha when the aux buffer is the alpha buffer (depth buffering off). */
 void GR_EXPORT GLIDE_API grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 depth) {
     GLIDE_TRACE("grBufferClear");
+    glide_lfb211_sync(0); /* Glide 2.1.1 pointer writes first, in order */
     glide_mt_idle();
     if (!g_win_open)
         return;
@@ -518,6 +519,7 @@ void GR_EXPORT GLIDE_API grBufferSwap(int swap_interval) {
     GLIDE_TRACE("grBufferSwap");
     if (!g_win_open)
         return;
+    glide_lfb211_sync(0); /* Glide 2.1.1 pointer writes into this frame */
     int vsync = swap_interval < 0 ? 0 : swap_interval > 4 ? 4 : swap_interval;
     if (g_vsync_cfg == 0)
         vsync = 0;
@@ -626,6 +628,8 @@ void GR_EXPORT GLIDE_API grDrawTriangle(const GrVertex *a, const GrVertex *b, co
 void glide_draw_triangle(const GrVertex *in_a, const GrVertex *in_b, const GrVertex *in_c) {
     if (!g_win_open)
         return;
+    if (g_lfb211_open)
+        glide_lfb211_sync(0); /* pending Glide 2.1.1 LFB writes lie under this triangle */
 #ifdef GLIDULATOR_DEBUG
     {
         int clip[4];

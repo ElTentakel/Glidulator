@@ -808,6 +808,11 @@ typedef struct voodoo_t {
     mutex_t *force_blit_mutex;
 
     int   use_recompiler;
+    /* GLIDULATOR: fast renderer (GLIDULATOR_RENDERER=fast, JIT only):
+     * perspective-correct texture coordinates and LOD exact every 16
+     * pixels, linear in between (vid_voodoo_render.c, seg_setup). Not
+     * bit-identical to the board, by design. */
+    int   fast_persp;
     void *codegen_data;
 
     /* JIT cache state -- per-instance to avoid races between render threads */

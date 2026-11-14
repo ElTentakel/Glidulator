@@ -114,7 +114,88 @@ static uint32_t i_00_ff_w[2] = { 0, 0xff };
 static inline int
 codegen_texture_fetch(uint8_t *code_block, voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *state, int block_pos, int tmu)
 {
-    if (params->textureMode[tmu] & 1) {
+    if ((params->textureMode[tmu] & 1) && voodoo->fast_persp) {
+        /* GLIDULATOR fast renderer: tex_s, tex_t and the LOD part step
+         * linearly within the segment set up by seg_setup()
+         * (vid_voodoo_render.c), each integer + 32-bit fraction:
+         * value -> destination, fraction += dfraction, value += d + carry.
+         * The LOD part ends in EAX as from vj_persp_fetch(). */
+        static const int fo[3][4] = {
+            { offsetof(voodoo_state_t, seg_s), offsetof(voodoo_state_t, seg_sf), offsetof(voodoo_state_t, seg_ds), offsetof(voodoo_state_t, seg_dsf) },
+            { offsetof(voodoo_state_t, seg_t), offsetof(voodoo_state_t, seg_tf), offsetof(voodoo_state_t, seg_dt), offsetof(voodoo_state_t, seg_dtf) },
+            { offsetof(voodoo_state_t, seg_lg), offsetof(voodoo_state_t, seg_lgf), offsetof(voodoo_state_t, seg_dlg), offsetof(voodoo_state_t, seg_dlgf) }
+        };
+        static const int dst[2] = { offsetof(voodoo_state_t, tex_s), offsetof(voodoo_state_t, tex_t) };
+        for (int k = 0; k < 3; k++) {
+            addbyte(0x8b); /*MOV EAX, seg_v[tmu]*/
+            addbyte(0x87);
+            addlong(fo[k][0] + 4 * tmu);
+            if (k < 2) {
+                addbyte(0x89); /*MOV tex_s/t, EAX*/
+                addbyte(0x87);
+                addlong(dst[k]);
+            } else {
+                addbyte(0x50); /*PUSH EAX (LOD part)*/
+            }
+            addbyte(0x8b); /*MOV EBX, seg_vf[tmu]*/
+            addbyte(0x9f);
+            addlong(fo[k][1] + 4 * tmu);
+            addbyte(0x03); /*ADD EBX, seg_dvf[tmu]*/
+            addbyte(0x9f);
+            addlong(fo[k][3] + 4 * tmu);
+            addbyte(0x89); /*MOV seg_vf[tmu], EBX*/
+            addbyte(0x9f);
+            addlong(fo[k][1] + 4 * tmu);
+            addbyte(0x13); /*ADC EAX, seg_dv[tmu]*/
+            addbyte(0x87);
+            addlong(fo[k][2] + 4 * tmu);
+            addbyte(0x89); /*MOV seg_v[tmu], EAX*/
+            addbyte(0x87);
+            addlong(fo[k][0] + 4 * tmu);
+        }
+        addbyte(0x58); /*POP EAX*/
+        if (params->textureMode[tmu] & TEXTUREMODE_LOD_DITHER) {
+            addbyte(0x8b); /*MOV EBX, state->x*/
+            addbyte(0x9f);
+            addlong(offsetof(voodoo_state_t, x));
+            addbyte(0x83); /*AND EBX, 3*/
+            addbyte(0xe3);
+            addbyte(3);
+            addbyte(0x03); /*ADD EAX, state->seg_dith[EBX*4]*/
+            addbyte(0x84);
+            addbyte(0x9f);
+            addlong(offsetof(voodoo_state_t, seg_dith));
+        }
+        addbyte(0x03); /*ADD EAX, state->lod*/
+        addbyte(0x87);
+        addlong(VOODOO_OFFSETOF_ARRAY_MEMBER(voodoo_state_t, tmu, tmu, lod));
+        addbyte(0x3b); /*CMP EAX, state->lod_min*/
+        addbyte(0x87);
+        addlong(VOODOO_OFFSETOF_ARRAY(voodoo_state_t, lod_min, tmu));
+        addbyte(0x0f); /*CMOVL EAX, state->lod_min*/
+        addbyte(0x4c);
+        addbyte(0x87);
+        addlong(VOODOO_OFFSETOF_ARRAY(voodoo_state_t, lod_min, tmu));
+        addbyte(0x3b); /*CMP EAX, state->lod_max*/
+        addbyte(0x87);
+        addlong(VOODOO_OFFSETOF_ARRAY(voodoo_state_t, lod_max, tmu));
+        addbyte(0x0f); /*CMOVNL EAX, state->lod_max*/
+        addbyte(0x4d);
+        addbyte(0x87);
+        addlong(VOODOO_OFFSETOF_ARRAY(voodoo_state_t, lod_max, tmu));
+        addbyte(0x0f); /*MOVZX EBX, AL*/
+        addbyte(0xb6);
+        addbyte(0xd8);
+        addbyte(0xc1); /*SHR EAX, 8*/
+        addbyte(0xe8);
+        addbyte(8);
+        addbyte(0x89); /*MOV state->lod_frac[tmu], EBX*/
+        addbyte(0x9f);
+        addlong(VOODOO_OFFSETOF_ARRAY(voodoo_state_t, lod_frac, tmu));
+        addbyte(0x89); /*MOV state->lod, EAX*/
+        addbyte(0x87);
+        addlong(offsetof(voodoo_state_t, lod));
+    } else if (params->textureMode[tmu] & 1) {
         /* GLIDULATOR: perspective division and LOD part through a call to
          * vj_persp_fetch() (vid_voodoo_render.c) instead of 86Box's x87
          * approximation, so the JIT is bit-identical to the C path

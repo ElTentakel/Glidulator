@@ -91,7 +91,27 @@ typedef struct voodoo_state_t {
      * reuses the 64-bit division; exact, it caches the same result. */
     int64_t rcp_w, rcp;
     int     rcp_log, rcp_valid;
+
+    /* GLIDULATOR: fast renderer (voodoo_t.fast_persp, seg_setup()): per
+     * segment of up to FAST_SEGMENT_PIXELS the JIT steps tex_s, tex_t and
+     * the LOD part linearly, each as integer + 32-bit fraction (ADD/ADC),
+     * per TMU. seg_nx_*: the exact values at the pixel after the segment,
+     * the start of the next one on the same line. seg_dith: LOD dither of
+     * the line for x & 3, already shifted (LOD_DITHER). */
+    int32_t  seg_s[2], seg_t[2], seg_lg[2], seg_ds[2], seg_dt[2], seg_dlg[2];
+    uint32_t seg_sf[2], seg_tf[2], seg_lgf[2], seg_dsf[2], seg_dtf[2], seg_dlgf[2];
+    int32_t  seg_nx_s[2], seg_nx_t[2], seg_nx_lg[2];
+    int      seg_nx_x, seg_nx_y, seg_nx_valid;
+    int32_t  seg_dith[4];
 } voodoo_state_t;
+
+/* GLIDULATOR: fast renderer, see voodoo_t.fast_persp */
+#define FAST_SEGMENT_PIXELS 16
+#ifndef NO_CODEGEN
+#    define FAST_PERSP_ON (voodoo->fast_persp && voodoo_draw)
+#else
+#    define FAST_PERSP_ON 0
+#endif
 
 /* GLIDULATOR: LOD dither (textureMode bit 4, Glide GR_MIPMAP_NEAREST_DITHER),
  * not implemented in 86Box. As on the board: a 4x4 ordered dither value,
@@ -962,6 +982,88 @@ vj_persp_fetch_dither(voodoo_state_t *state, int tmu)
 #endif
 
 
+#ifndef NO_CODEGEN
+/* GLIDULATOR fast renderer: v steps from a (first pixel) to b (n steps
+ * later) as integer + 32-bit fraction, rounded (fraction starts at 1/2).
+ * Step = (b - a) * 2^32 / n: a multiplication by 2^28 for full segments
+ * (n = 16), else
+ * times a 2^32 / n table (last digit of the fraction may differ from an
+ * exact division). Integer arithmetic only: the same on every core and
+ * platform. Differences beyond +-2^31 (never meaningful) are clamped. */
+static const uint32_t seg_inv[FAST_SEGMENT_PIXELS + 1] = {
+    0, 0, 0x80000000u, 0x55555555u, 0x40000000u, 0x33333333u, 0x2aaaaaaau, 0x24924924u, 0x20000000u,
+    0x1c71c71cu, 0x19999999u, 0x1745d174u, 0x15555555u, 0x13b13b13u, 0x12492492u, 0x11111111u, 0x10000000u
+};
+
+static void
+seg_lin(int32_t a, int32_t b, int n, int32_t *v, uint32_t *vf, int32_t *d, uint32_t *df)
+{
+    int64_t diff = (int64_t) b - a, step;
+    if (diff > 0x7fffffff)
+        diff = 0x7fffffff;
+    if (diff < -0x7fffffff)
+        diff = -0x7fffffff;
+    if (n == FAST_SEGMENT_PIXELS)
+        step = diff * (int64_t) (1u << 28);
+    else
+        step = n > 1 ? diff * (int64_t) seg_inv[n] : 0; /* one pixel: no step */
+    *v  = a;
+    *vf = 0x80000000u;
+    *d  = (int32_t) (step >> 32);
+    *df = (uint32_t) step;
+}
+
+/* Exact texel coordinates and LOD part at s/t/w, as voodoo_tmu_fetch() */
+static void
+seg_exact(voodoo_state_t *state, int64_t s, int64_t t, int64_t w, int32_t *sx, int32_t *tx, int32_t *lg)
+{
+    int     l;
+    int64_t r = w_reciprocal(state, w, &l);
+    *sx       = (int32_t) (((((s + (1 << 13)) >> 14) * r) + (1 << 29)) >> 30);
+    *tx       = (int32_t) (((((t + (1 << 13)) >> 14) * r) + (1 << 29)) >> 30);
+    *lg       = l - (W_RECIPROCAL_LOG2_OFFSET << 8);
+}
+
+/* Fast renderer: segment x .. x + dx (inclusive) on line y. Exact at x
+ * (taken over from the previous segment when it ended there) and at
+ * x + dx + xdir, linear in between; only for perspective-textured TMUs. */
+static void
+seg_setup(const voodoo_t *voodoo, const voodoo_params_t *params, voodoo_state_t *state, int x, int y, int dx)
+{
+    int n     = (dx < 0 ? -dx : dx) + 1;
+    int end   = dx + state->xdir;
+    int reuse = state->seg_nx_valid && state->seg_nx_x == x && state->seg_nx_y == y;
+    for (int tmu = 0; tmu < 2; tmu++) {
+        int32_t s1, t1, l1, s2, t2, l2;
+        if (!(params->textureMode[tmu] & TEXTUREMODE_TPERSP_ST) || (tmu == 1 && !voodoo->dual_tmus))
+            continue;
+        int64_t s = tmu ? state->tmu1_s : state->tmu0_s;
+        int64_t t = tmu ? state->tmu1_t : state->tmu0_t;
+        int64_t w = tmu ? state->tmu1_w : state->tmu0_w;
+        if (reuse) {
+            s1 = state->seg_nx_s[tmu];
+            t1 = state->seg_nx_t[tmu];
+            l1 = state->seg_nx_lg[tmu];
+        } else
+            seg_exact(state, s, t, w, &s1, &t1, &l1);
+        seg_exact(state, s + params->tmu[tmu].dSdX * end, t + params->tmu[tmu].dTdX * end,
+                  w + params->tmu[tmu].dWdX * end, &s2, &t2, &l2);
+        state->seg_nx_s[tmu]  = s2;
+        state->seg_nx_t[tmu]  = t2;
+        state->seg_nx_lg[tmu] = l2;
+        seg_lin(s1, s2, n, &state->seg_s[tmu], &state->seg_sf[tmu], &state->seg_ds[tmu], &state->seg_dsf[tmu]);
+        seg_lin(t1, t2, n, &state->seg_t[tmu], &state->seg_tf[tmu], &state->seg_dt[tmu], &state->seg_dtf[tmu]);
+        seg_lin(l1, l2, n, &state->seg_lg[tmu], &state->seg_lgf[tmu], &state->seg_dlg[tmu], &state->seg_dlgf[tmu]);
+    }
+    if (!reuse)
+        for (int i = 0; i < 4; i++)
+            state->seg_dith[i] = lod_dither_4x4[state->real_y & 3][i] << 4;
+    state->seg_nx_x     = x + dx + state->xdir;
+    state->seg_nx_y     = y;
+    state->seg_nx_valid = 1;
+}
+#endif
+
 static void
 voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *state, int ystart, int yend, int odd_even)
 {
@@ -1097,6 +1199,7 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
             state->xend += state->dx2;
         }
     }
+    state->seg_nx_valid = 0;
 #ifndef NO_CODEGEN
     if (voodoo->use_recompiler)
         voodoo_draw = (uint8_t (VOODOO_JIT_CALL *)(voodoo_state_t *, voodoo_params_t *, int, int))
@@ -1259,7 +1362,8 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
           The recompiled code reads state->x, state->x2 and state->tmu[].lod on every call, so it draws one part per call.*/
         do {
             if (lod_per_span_part) {
-                const int span_part_last_offset = VOODOO_LOD_SPAN_PART_PIXELS - 1;
+                /* fast renderer: one LOD part per segment */
+                const int span_part_last_offset = FAST_PERSP_ON ? FAST_SEGMENT_PIXELS - 1 : VOODOO_LOD_SPAN_PART_PIXELS - 1;
 
                 if (state->xdir > 0)
                     x2 = (x + span_part_last_offset < span_end_x) ? (x + span_part_last_offset) : span_end_x;
@@ -1267,8 +1371,18 @@ voodoo_half_triangle(voodoo_t *voodoo, voodoo_params_t *params, voodoo_state_t *
                     x2 = (x - span_part_last_offset > span_end_x) ? (x - span_part_last_offset) : span_end_x;
 
                 voodoo_update_span_part_lod(voodoo, params, state, x2 - x, triangle_lod_base, lod_bias);
+            } else if (FAST_PERSP_ON) {
+                const int last = FAST_SEGMENT_PIXELS - 1;
+                if (state->xdir > 0)
+                    x2 = (x + last < span_end_x) ? (x + last) : span_end_x;
+                else
+                    x2 = (x - last > span_end_x) ? (x - last) : span_end_x;
             } else
                 x2 = span_end_x;
+#ifndef NO_CODEGEN
+            if (FAST_PERSP_ON)
+                seg_setup(voodoo, params, state, x, real_y, x2 - x);
+#endif
 
             state->x  = x;
             state->x2 = x2;

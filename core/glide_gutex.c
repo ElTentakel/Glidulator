@@ -99,8 +99,13 @@ GrMipMapId_t GR_EXPORT GLIDE_API guTexAllocateMemory(GrChipID_t tmu, FxU8 odd_ev
     if (!gu_tmu_ok(tmu) || g_mm_next >= GU_MAX_MIPMAPS)
         return GR_NULL_MIPMAP_HANDLE;
     FxU32 bytes = glide_tex_mem_required(smallest_lod, largest_lod, aspect, fmt, odd_even_mask);
-    if (!bytes || g_mm_free_base[tmu] + bytes > TEX_MEM_BYTES)
+    if (!bytes || g_mm_free_base[tmu] + bytes > TEX_MEM_BYTES) {
+#ifdef GLIDULATOR_TRACE
+        glide_trace_note("guTexAllocateMemory failed: bytes / used", (unsigned long) bytes,
+                         (unsigned long) g_mm_free_base[tmu]);
+#endif
         return GR_NULL_MIPMAP_HANDLE; /* invalid, or texture memory full */
+    }
 
     GrMipMapId_t  id = (GrMipMapId_t) g_mm_next++;
     GrMipMapInfo *mm = &g_mm[id];

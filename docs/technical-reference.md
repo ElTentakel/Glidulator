@@ -11,10 +11,11 @@ is. It records final design decisions only.
 Game
   |  Glide 2.x calls (grSstWinOpen, grDrawTriangle, ...)
   v
-targets/glide_ovl (DOS, GLIDE2X.OVL)      targets/glide_dll (Windows, glide2x.dll, glide3x.dll)
+targets/glide_ovl (DOS, GLIDE2X.OVL)      targets/glide_dll (Windows, glide2x.dll, glide3x.dll, glide.dll)
   |  exports, entry point; no own state
   v
 core/glide3_abi.c  (glide3x.dll only)      Glide 3.x calls -> Glide 2.x calls
+core/glide211_abi.c (glide.dll only)       Glide 2.1.1 additions (grSstOpen, LFB pointers)
   |
   v
 core/                                      portable, no OS knowledge
@@ -123,6 +124,30 @@ Trace, capture and replay therefore work unchanged on the Glide 2 calls.
   stipple patterns, and `grAADrawTriangle` draws without edge
   anti-aliasing.
 
+**Glide 2.1.1** (`glide.dll`, the first Voodoo Graphics games) is the
+unchanged Glide 2 core plus `core/glide211_abi.c`; `glide.def` is
+`glide2x.def` plus the 2.1.1 names (`tools/abi/gen_glide211.py`).
+- `grSstOpen` is `grSstWinOpen` without a window; `grSstPassthruMode`
+  hides the output window (`platform_show_output`) while the game shows
+  the VGA card's picture, e.g. AVI intros (CyberGladiators).
+- LFB access has no lock: `grLfbGetWritePtr` returns a pointer with the
+  board's stride (2048 bytes, 4096 for 32-bit formats) and games write
+  only the pixels they need. The pointer goes to a shadow buffer filled
+  with the current picture, next to an untouched copy (pre-image); pixels
+  that differ from it are written, through the pixel pipeline unless the
+  game enabled `grLfbBypassMode` (default: pipeline, as Scorched Planet's
+  HUD expects). The pipeline step (`core/glide_lfb.c`) applies chroma
+  key, alpha test, depth test with `grLfbConstantDepth`, alpha blending
+  and the write masks with the rasterizer's own macros; alpha comes from
+  the 1555/8888 data or `grLfbConstantAlpha`.
+- Writes stay pending after `grLfbEnd` and go out before the next
+  triangle, clear, swap or other LFB call (`g_lfb211_open`, checked in
+  `glide_draw_triangle`). Scorched Planet takes the pointer about 85 times
+  per frame (once per HUD element). A copy of the picture rows the shadow
+  was made from (`snap`) keeps re-arming cheap, since only rows that
+  changed since are converted again; together with the deferred writes
+  its first mission went from 5 to 40-48 fps under Wine.
+
 ## 3. Module formats
 
 - **`GLIDE2X.OVL` is not an overlay but a DOS/4G LE DLL**. Games load it
@@ -133,9 +158,10 @@ Trace, capture and replay therefore work unchanged on the Glide 2 calls.
 - The OVL has no C runtime startup. Memory comes from DPMI (`INT 31h`
   0501h) per allocation, and nothing in the OVL relies on CRT
   initialisation.
-- **`glide2x.dll`** and **`glide3x.dll`** are built with mingw-w64 for
-  Windows 4.0. Exports carry 3dfx's exact names and mixed casing
-  (`targets/glide_dll/glide2x.def`, `glide3x.def`), libgcc is linked
+- **`glide2x.dll`**, **`glide3x.dll`** and **`glide.dll`** are built
+  with mingw-w64 for Windows 4.0. Exports carry 3dfx's exact names and
+  mixed casing (`targets/glide_dll/glide2x.def`, `glide3x.def`,
+  `glide.def`), libgcc is linked
   statically, and only system DLLs are imported
   (`KERNEL32`, `USER32`, `GDI32`, `msvcrt`).
 
@@ -145,11 +171,31 @@ Two independent axes, chosen at `grSstWinOpen` (`core/renderer.c`):
 
 | Axis | Choices |
 |---|---|
-| Pixel pipeline | **C** interpreter (always available), **JIT**: x86 code generated per render-state combination with SSE2 (32-bit builds only) |
+| Pixel pipeline | **C** interpreter (always available), **JIT**: x86 code generated per render-state combination with SSE2 (32-bit builds only), **fast**: the JIT with approximated perspective (below, only on request) |
 | Threads | 1, or 1-8 render workers (the game's core drawing too with up to 7) |
 
-Both paths and all thread counts produce bit-identical frames. This is
+C and JIT and all thread counts produce bit-identical frames. This is
 verified on recorded frames of real software (`glide_replay --compare`).
+
+**Fast renderer** (`GLIDULATOR_RENDERER=fast`, never chosen by `auto`):
+- Perspective-correct texturing needs a 64-bit division and two 64-bit
+  products per pixel and texture unit; in Quake-engine games that was
+  about 40 % of the drawing time.
+- The fast renderer computes texture coordinates and the LOD exactly only
+  at the start of every 16-pixel segment of a scanline (and at the pixel
+  after it, which starts the next segment). In between the generated code
+  steps them linearly, in integer arithmetic with a 32-bit fraction. This
+  is the subdivision of Quake's own software renderer. The LOD part of the
+  texture gradient (`voodoo_update_span_part_lod`) is also computed once
+  per segment instead of every 8 pixels. LOD dither works as in the exact
+  paths.
+- Everything after the texture coordinates is unchanged: filtering,
+  combine, fog, blending, dither, depth.
+- The picture is not bit-identical to the board. On recorded frames
+  (`tools/compat/fastcheck.sh`) a few percent of the pixels differ, by a
+  fraction of a texel; PSNR against the exact path is 45-55 dB. All
+  thread counts give the same picture.
+- It needs the JIT; without SSE2 it falls back to the exact C path.
 
 **SSE availability**:
 - Windows: the DLL runs one SSE instruction behind its own SEH frame at
@@ -246,7 +292,7 @@ Otherwise rendering stays on one core.
 
 The faulting AP is identified through its stack address.
 
-**Windows NT/Linux**: workers are threads. There `GLIDULATOR_THREADS=auto`
+**Windows NT (3.51 and later)/Linux**: workers are threads. There `GLIDULATOR_THREADS=auto`
 starts at most four: the OS counts every logical CPU, and with a spinning
 worker on each of them any other load preempts one and the frame waits
 for it. Under DOS and with `GLSMP.VXD` the cores belong to Glidulator
@@ -431,8 +477,12 @@ the LFB are tracked in a bitmap and excluded.
   scanline when they differed by less than a threshold. This removes the
   4x4 dither pattern but keeps edges.
 - 3dfx's driver enabled it with threshold `0x080408`.
-- The GL-1 reproduces it as in 86Box: per-channel lookup tables, four
-  passes per line.
+- The GL-1 reproduces it as in 86Box: per channel four passes per line,
+  each pixel moving towards its neighbour by half the difference, limited
+  to the threshold. With SSE2 (Windows DLLs) the passes are computed 16
+  pixels at a time (`core/vfilter_kern.c`); otherwise, and in the DOS OVL,
+  through per-channel lookup tables. Both give the same picture
+  (`tests/vfilter_test.c`).
 - The result has more than 16 bits per pixel and is output as XRGB8888.
 
 **Start-up show** (`GLIDULATOR_SPLASH` for the logo, `GLIDULATOR_CRT` for
@@ -568,6 +618,7 @@ therefore lose the overlap between game logic and rendering.
 |---|---|---|
 | Write-combining for the framebuffer (`GLIDULATOR_WC`, default on; VBEMP and other generic drivers) | GLQuake 640x480: 37.6 -> 56 fps; GDI copy 9-10 ms -> 0.1 ms per frame | Nature, 800x600 output: output 17.1 -> 2.8 ms per frame, 26 -> 49 fps at the same spot (at 640x480 about two thirds of these output times) |
 | JIT instead of C pixel path (needs SSE2) | renderer 1.8-1.9 times as fast (replay) | same; needs ring 0 or a DPMI host that enables SSE |
+| Fast renderer (`GLIDULATOR_RENDERER=fast`, not pixel-exact) | GLQuake replay one core 33.0 -> 21.6 ms; on a Core 2 Duo E8400 (2 cores): Half-Life with Voodoo filter and LOD dither 31.8 -> 38.1 fps, Need for Speed: Porsche Unleashed replay 22.2 -> 27.7 fps | Nature replay 21.2 -> 18.7 ms; Nature on a Core 2 Duo E8400, ring 0, 2 cores: game + render 11.4 -> 9.7 ms (first version) |
 | Multi-core (`GLIDULATOR_THREADS=auto`) | GLQuake 640x480 (0.9.1): 1 core 15.4 fps, 4 cores 38.8 fps; Windows 98 needs `GLSMP.VXD` | Nature 800x600: 2 cores 75 -> 98 fps, 4 cores 125 -> 143 fps with the game's core drawing too |
 | Hyper-threading (`GLIDULATOR_HT=1`) | no gain | slower (4C+HT: 114 vs 88 fps) |
 | Two TMUs (default under Windows) | GLQuake 640x480 timedemo: 76.6 -> 93.8 fps; Unreal Tournament intro 640x480: 40-46 -> 51-55 fps; Undying 800x600: 26 -> 37 fps | not measured; costs about 3 MB more memory (up to 10 MB) |
@@ -577,7 +628,9 @@ therefore lose the overlap between game logic and rendering.
 | Ring 0 instead of ring 3 under DOS | -- | Nature: render 9.1 -> 7.1 ms; before write-combining through the call gate, ring 3 also had no write-combining (42 fps vs 128 fps) |
 
 Image options cost extra: the Voodoo video filter about 0.3 ms per frame
-of output at 640x480 (GLQuake 69.1 -> 64.8 fps), FSAA 2x halves the frame
+of output at 640x480 on a Core i7-4790 (GLQuake 69.1 -> 64.8 fps; before
+SSE2), on a Core 2 Duo E8400 3.5 ms including the 32-bit output (Half-Life
+34.8 fps with the filter, 37.4 without; 31.8 before SSE2), FSAA 2x halves the frame
 rate (GLQuake 38.8 -> 19.4 fps), and vsync caps at the refresh rate.
 
 ## 10. Known limitations

@@ -1,14 +1,17 @@
-/* Version information of glide2x.dll and glide3x.dll (-DGLIDULATOR_GLIDE3)
- * (Explorer: Properties > Version). */
+/* Version information of glide2x.dll, glide3x.dll (-DGLIDULATOR_GLIDE3)
+ * and glide.dll (-DGLIDULATOR_GLIDE211) (Explorer: Properties > Version). */
 
 #include <winver.h>
 #include "glidulator/version.h"
 
 #define VER_NUM GLIDULATOR_VERSION_MAJOR, GLIDULATOR_VERSION_MINOR, GLIDULATOR_VERSION_PATCH, 0
 
-#ifdef GLIDULATOR_GLIDE3
+#if defined(GLIDULATOR_GLIDE3)
 #    define GLIDULATOR_API  "Glide 3.x"
 #    define GLIDULATOR_FILE "glide3x"
+#elif defined(GLIDULATOR_GLIDE211)
+#    define GLIDULATOR_API  "Glide 2.1.1"
+#    define GLIDULATOR_FILE "glide"
 #else
 #    define GLIDULATOR_API  "Glide 2.x"
 #    define GLIDULATOR_FILE "glide2x"

@@ -1351,7 +1351,8 @@ static int test_renderer(void) {
     fail |= glide_config_find(cfg, "GLIDULATOR_THREADS", buf, sizeof buf); /* empty */
     fail |= glide_config_find(cfg, "SST", buf, sizeof buf);                /* prefix only */
     fail |= glide_renderer_parse("JIT") != GLIDE_RENDERER_JIT || glide_renderer_parse("auto") != GLIDE_RENDERER_AUTO ||
-            glide_renderer_parse("sse") != GLIDE_RENDERER_UNKNOWN;
+            glide_renderer_parse("sse") != GLIDE_RENDERER_UNKNOWN || glide_renderer_parse("Fast") != GLIDE_RENDERER_FAST ||
+            strcmp(glide_renderer_name(GLIDE_RENDERER_FAST), "fast");
     /* The example of the release package (package/GLIDULAT.CFG): within the
      * read limit, every setting present but commented out, and each one
      * found once its # is removed. */
@@ -1428,9 +1429,25 @@ static int test_renderer(void) {
                 glide_renderer_threads(), glide_renderer_name(want), glide_renderer_max_threads());
         fail = 1;
     }
+    /* fast: the JIT with approximated perspective; without the JIT the
+     * exact C path, never the JIT without approximation */
+    glide_renderer_force(GLIDE_RENDERER_FAST, 1);
+    if (open_320x240())
+        return 1;
+    want = glide_renderer_available(GLIDE_RENDERER_FAST) ? GLIDE_RENDERER_FAST : GLIDE_RENDERER_C;
+    if (glide_renderer_active() != want || g_voodoo.fast_persp != (want == GLIDE_RENDERER_FAST)) {
+        fprintf(stderr, "GLIDULATOR_RENDERER=fast: %s, fast_persp %d\n", glide_renderer_name(glide_renderer_active()),
+                g_voodoo.fast_persp);
+        fail = 1;
+    }
     glide_renderer_force(GLIDE_RENDERER_AUTO, 0);
     if (open_320x240())
         return 1;
+    /* auto never picks the approximation */
+    if (glide_renderer_active() == GLIDE_RENDERER_FAST || g_voodoo.fast_persp) {
+        fprintf(stderr, "auto chose the fast renderer\n");
+        fail = 1;
+    }
     unsigned cpu = platform_cpu_features();
     printf("  CPU:%s%s%s, path %s, %d thread(s)\n", (cpu & PLATFORM_CPU_MMX) ? " MMX" : "",
            (cpu & PLATFORM_CPU_SSE) ? " SSE" : "", (cpu & PLATFORM_CPU_SSE2) ? " SSE2" : "",
@@ -2578,6 +2595,50 @@ static int test_tex_reload(void) {
     return 0;
 }
 
+/* Glide 2.1.1 pointer access (glide.dll, core/glide_lfb.c), as Scorched
+ * Planet draws its HUD: 1555 through the pixel pipeline with an alpha test
+ * drops the transparent pixels; the writes wait until the next triangle,
+ * which then lies on top; pixels the game does not write keep the picture;
+ * with the bypass even transparent pixels are written. */
+static int test_lfb211(void) {
+    printf("-- Test 28: Glide 2.1.1 LFB pointer --\n");
+    enum { RED = 0xf800, BLU = 0x001f };
+    int fail = 0;
+    if (open_320x240())
+        return 1;
+    grDitherMode(GR_DITHER_DISABLE);
+    grBufferClear(0x000000ff, 0, 0); /* blue */
+    grAlphaTestFunction(GR_CMP_GREATER);
+    grAlphaTestReferenceValue(0);
+    uint16_t *p = (uint16_t *) glide_lfb211_write_ptr(GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_1555, 1,
+                                                      GR_ORIGIN_UPPER_LEFT);
+    if (!p) {
+        fprintf(stderr, "glide_lfb211_write_ptr failed\n");
+        return 1;
+    }
+    p[10 * 1024 + 10] = 0xfc00; /* opaque red */
+    p[10 * 1024 + 11] = 0x7c00; /* transparent red: dropped by the alpha test */
+    p[25 * 1024 + 25] = 0x83e0; /* opaque green, under the triangle below */
+    glide_lfb211_end();         /* still pending */
+    quad(20, 20, 30, 30, 255, 0, 0, 0);
+    grAlphaTestFunction(GR_CMP_ALWAYS);
+    p = (uint16_t *) glide_lfb211_write_ptr(GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_1555, 0, GR_ORIGIN_UPPER_LEFT);
+    p[40 * 1024 + 40] = 0x7c00; /* bypass: transparent red is written */
+    glide_lfb211_end();
+    grBufferSwap(1);
+    fail |= check_pixel(10, 10, RED, "opaque 1555 pixel through the pipeline");
+    fail |= check_pixel(11, 10, BLU, "transparent pixel dropped by the alpha test");
+    fail |= check_pixel(12, 10, BLU, "pixel not written stays");
+    fail |= check_pixel(25, 25, RED, "triangle drawn after the LFB write lies on top");
+    fail |= check_pixel(40, 40, RED, "bypass writes the transparent pixel");
+    if (fail) {
+        fprintf(stderr, "Test 28 FAILED\n");
+        return 1;
+    }
+    printf("  ok: pipeline alpha test, deferred writes under triangles, bypass\n");
+    return 0;
+}
+
 int main(void) {
     printf("glidulator smoke test\n");
     setenv("GLIDULATOR_SPLASH", "off", 1); /* the logo is on by default; only test 22 plays it */
@@ -2600,7 +2661,7 @@ int main(void) {
     if (test_demo_triangles() || test_demo_triangles_mipmap())
         return 1;
     if (test_lfb() || test_sst() || test_gutex() || test_fog_ncc() || test_gu_presets() || test_clip() || test_renderer() || test_output_osd() || test_fsaa() || test_fsaa_auto_post() || test_voodoo_filter() ||
-        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither() || test_two_tmus() || test_tex_reload())
+        test_lfb_after_close() || test_splash() || test_screenshot() || test_fan_coverage() || test_lod_dither() || test_two_tmus() || test_tex_reload() || test_lfb211())
         return 1;
 
     grGlideShutdown();

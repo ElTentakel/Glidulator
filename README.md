@@ -39,7 +39,7 @@ The GL-1 would not exist without these projects and the people behind them:
 ## Product highlights
 
 - **Drop-in replacement**: `GLIDE2X.OVL` for DOS games (DOS/4G LE DLL),
-  `glide2x.dll` for Windows 9x games and `glide3x.dll` for Windows games
+  `glide2x.dll` for Windows 9x and NT games and `glide3x.dll` for Windows games
   with a Glide 3 renderer (plus `GLSMP.VXD` for multi-core). All 132
   Glide 2.x entry points and the 14 `pci*` helpers of the original runtime
   are exported with their original names, and the 93 entry points of
@@ -79,37 +79,34 @@ The GL-1 would not exist without these projects and the people behind them:
 |            | DOS                                            | Windows                                              |
 |------------|------------------------------------------------|------------------------------------------------------|
 | File       | `GLIDE2X.OVL`                                  | `glide2x.dll`, `glide3x.dll` (Glide 3)               |
-| Host       | MS-DOS / FreeDOS with DOS/4GW games            | Windows 95/98/ME (also runs under Wine)              |
+| Host       | MS-DOS / FreeDOS with DOS/4GW games            | Windows 95/98/ME, Windows NT 3.51/4.0 (also runs under Wine) |
 | Display    | VBE 2.0 linear framebuffer (15/16/24/32 bpp)   | GDI, own full-screen window                          |
 |            | fallback VGA mode 13h                          |                                                      |
 | CPU        | 386+; JIT needs SSE2 (quad core recommended)   | 486+; JIT needs SSE2                                 |
-| Multi-core | yes, without memory manager, with HIMEM only, or under HDPMI32i | Windows 9x: with `GLSMP.VXD` next to the DLL; NT/XP and Wine use threads |
+| Multi-core | yes, without memory manager, with HIMEM only, or under HDPMI32i | Windows 9x: with `GLSMP.VXD` next to the DLL; NT and Wine use threads |
 
 ## Quick start
 
-The current version is **0.9.6, a preview release**: the tested titles
+The current version is **0.9.7, a preview release**: the tested titles
 run, a few known issues remain (see
-[Known issues](docs/compatibility.md#known-issues-in-096)). Download the
-package `glidulator-0.9.6.zip` from the
+[Known issues](docs/compatibility.md#known-issues-in-097)). Download the
+package `glidulator-0.9.7.zip` from the
 [Releases](https://github.com/ElTentakel/Glidulator/releases) page.
 
-New in 0.9.6 (all versions: [CHANGES.md](CHANGES.md)):
+New in 0.9.7 (all versions: [CHANGES.md](CHANGES.md)):
 
-- **Glide 3** (`glide3x.dll`) for Windows games with a Glide 3 renderer:
-  Need for Speed: Porsche Unleashed (75-81 fps on a Core i7-4790 under
-  Windows 98), Diablo II, Slave Zero, Operation Flashpoint. With
-  `GLIDULATOR_SPLASH=original` it can show 3dfx's own Glide 3 logo from
-  `3dfxSpl3.dll`.
-- **Unreal-engine games**: 4 MB texture memory, two texture units by
-  default under Windows, faster texture uploads and a pooled texture
-  cache. Clive Barker's Undying, first level: 17 -> 42 fps; Unreal Gold's
-  castle flyby 30-55 -> 59-84 fps (Core i7-4790, Windows 98).
-- **DOS**: write-combining also under SBEMU (Redguard 35.9 -> 72 fps), a
-  clean exit when a game quits without closing Glide, less memory (two
-  texture units now cost 3 MB instead of 13 MB).
-- **Alpha buffer** (destination alpha, Lands of Lore: Guardians of
-  Destiny), detail and multi-base textures, and exact fog in the fast
-  renderer (Operation Flashpoint, Redguard).
+- **Glide 2.1.1** (`glide.dll`) for the first Voodoo Graphics games:
+  the demos of Scorched Planet (84-97 fps on a Core i7-4790 under
+  Windows 98), Pandemonium! and CyberGladiators, with VGA passthrough and
+  the LFB access of that time.
+- **Windows NT 3.51 and 4.0** are supported platforms (threads, C path;
+  NT 3.51 needs an `msvcrt.dll` next to the game).
+- **Fast renderer** (`GLIDULATOR_RENDERER=fast`, optional, needs SSE2):
+  perspective exact every 16 pixels, linear in between. Not pixel-exact;
+  on a Core 2 Duo E8400 Half-Life 31.8 -> 38.1 fps, Need for Speed:
+  Porsche Unleashed 22.2 -> 27.7 fps.
+- **Voodoo video filter with SSE2** (Windows): same picture, Half-Life on
+  the E8400 with the filter 31.8 -> 34.8 fps.
 
 1. Pick the variant you need. Each comes as an OVL and as a DLL:
 
@@ -141,6 +138,8 @@ among them:
   Uprising, Nature95, Formula 1, Operation 3DFX '98.
 - **Windows (Glide 3)**: Need for Speed: Porsche Unleashed, Diablo II,
   Slave Zero, Operation Flashpoint.
+- **Windows (Glide 2.1.1)**: Scorched Planet, Pandemonium!,
+  CyberGladiators.
 
 Games that link Glide statically instead of loading the OVL/DLL (e.g. the
 3Dfx versions of Tomb Raider and Carmageddon) cannot be supported this way.

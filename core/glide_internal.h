@@ -286,6 +286,18 @@ void glide_modes_reset(void);
 void glide_tex_reset(void);
 void glide_lfb_reset(void);
 
+/* Glide 2.1.1 LFB pointer access (glide.dll, core/glide_lfb.c): pointer
+ * into a shadow buffer (stride 2048 bytes, 4096 for 32-bit formats).
+ * Writes stay pending after grLfbEnd; glide_lfb211_sync writes them
+ * (before triangles, clears, swaps, other LFB calls), with rearm=1 the
+ * access stays open. g_lfb211_open: an access is open (no-op otherwise). */
+extern int  g_lfb211_open;
+void       *glide_lfb211_write_ptr(GrBuffer_t buffer, GrLfbWriteMode_t mode, int pipeline, GrOriginLocation_t origin);
+const void *glide_lfb211_read_ptr(GrBuffer_t buffer, GrOriginLocation_t origin);
+void        glide_lfb211_begin(void);
+void        glide_lfb211_end(void);
+void        glide_lfb211_sync(int rearm);
+
 /* Keep FBZCP_TEXTURE_ENABLED up to date: Glide enables the TMU only when
  * the colour or alpha combine actually uses the texture. */
 void glide_update_texture_enable(void);

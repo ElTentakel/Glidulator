@@ -92,6 +92,11 @@ void platform_display_prefer_deep(int on);
 void platform_display_open(int w, int h);
 void platform_display_close(void);
 
+/* Glide 2.1.1 grSstPassthruMode (glide.dll, Windows only): on = 0 hides
+ * the Glide picture so the program's own (VGA) window shows, e.g. for AVI
+ * intros; on = 1 shows the Glide picture again. */
+void platform_show_output(int on);
+
 /* 1 if the program has left the Glide screen mode on its own (DOS: back to
  * text mode before grSstWinClose); then nothing more may be drawn. */
 int platform_display_lost(void);

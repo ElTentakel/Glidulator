@@ -20,7 +20,7 @@ static int g_force_threads = 0;
 static int g_active        = GLIDE_RENDERER_C;
 static int g_threads       = 1;
 
-static const char *const g_names[GLIDE_RENDERER_COUNT] = { "c", "jit" };
+static const char *const g_names[GLIDE_RENDERER_COUNT] = { "c", "jit", "fast" };
 
 static int lower(int c) {
     return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
@@ -54,6 +54,7 @@ int glide_renderer_available(int kind) {
     case GLIDE_RENDERER_C:
         return 1;
     case GLIDE_RENDERER_JIT:
+    case GLIDE_RENDERER_FAST:
         return GLIDULATOR_HAVE_JIT && (platform_cpu_features() & PLATFORM_CPU_SSE2);
     default:
         return 0;
@@ -180,10 +181,11 @@ void glide_renderer_apply(void) {
 #ifndef NO_CODEGEN
     /* Hook up the code blocks (g_voodoo is zeroed by grSstWinOpen); without
      * executable memory fall back to C. */
-    if (g_active == GLIDE_RENDERER_JIT && !voodoo_codegen_init(&g_voodoo))
+    if ((g_active == GLIDE_RENDERER_JIT || g_active == GLIDE_RENDERER_FAST) && !voodoo_codegen_init(&g_voodoo))
         g_active = GLIDE_RENDERER_C;
 #endif
-    g_voodoo.use_recompiler = (g_active == GLIDE_RENDERER_JIT);
+    g_voodoo.use_recompiler = (g_active == GLIDE_RENDERER_JIT || g_active == GLIDE_RENDERER_FAST);
+    g_voodoo.fast_persp     = (g_active == GLIDE_RENDERER_FAST);
     g_voodoo.render_threads = g_threads;
     /* Start workers only now (they read render_threads); if that fails,
      * continue on one core. */

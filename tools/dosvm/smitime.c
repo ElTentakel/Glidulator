@@ -114,6 +114,9 @@ static void dos_free(unsigned sel) {
 
 static volatile u32 *g_apic;
 static int           g_ring0;
+/* MSR 34h (SMI count) exists from Nehalem on (Intel family 6, model 1Ah+);
+ * reading it on a Core 2 raises #GP. */
+static int           g_smimsr;
 
 static void ipi_all(u32 lo) { /* all excluding self */
     g_apic[0x310 / 4] = 0;
@@ -124,7 +127,7 @@ static void ipi_all(u32 lo) { /* all excluding self */
 
 static void measure(const char *label) {
     u32 smi0 = 0, smi1 = 0, hi;
-    if (g_ring0)
+    if (g_smimsr)
         rdmsr2(0x34, &smi0, &hi);
     unsigned long long end = tsc() + (unsigned long long) g_per_us * 1000000u, last = tsc(), now;
     u32 thr = g_per_us * 50, n = 0, maxg = 0;
@@ -139,17 +142,17 @@ static void measure(const char *label) {
         }
         last = now;
     }
-    if (g_ring0)
+    if (g_smimsr)
         rdmsr2(0x34, &smi1, &hi);
     out("%s: 1 s: %u gaps > 50 us, %u us in gaps, longest %u us", label, n, (u32) (sum / g_per_us),
         maxg / g_per_us);
-    if (g_ring0)
+    if (g_smimsr)
         out(", SMIs %u", smi1 - smi0);
     out("\n");
     for (int port = 0x64; port >= 0x60; port -= 4) {
         u32 mn = 0xffffffffu, mx = 0;
         unsigned long long tot = 0;
-        if (g_ring0)
+        if (g_smimsr)
             rdmsr2(0x34, &smi0, &hi);
         for (int i = 0; i < 32; i++) {
             unsigned long long a = tsc();
@@ -161,11 +164,11 @@ static void measure(const char *label) {
             if (d > mx)
                 mx = d;
         }
-        if (g_ring0)
+        if (g_smimsr)
             rdmsr2(0x34, &smi1, &hi);
         out("  32x in %02xh: min %u us, avg %u us, max %u us", port, mn / g_per_us, (u32) (tot / 32 / g_per_us),
             mx / g_per_us);
-        if (g_ring0)
+        if (g_smimsr)
             out(", SMIs %u", smi1 - smi0);
         out("\n");
     }
@@ -186,6 +189,13 @@ int main(int argc, char **argv) {
     if (argc > 1)
         mode = (argv[1][0] | 0x20) == 'i' ? 1 : (argv[1][0] | 0x20) == 'r' ? 2 : 0;
     g_ring0 = (get_cs() & 3) == 0;
+    {
+        unsigned r[4], vendor[4];
+        cpuid4(0, 0, vendor);
+        cpuid4(1, 0, r);
+        unsigned fam = (r[0] >> 8) & 15, model = ((r[0] >> 4) & 15) | (((r[0] >> 16) & 15) << 4);
+        g_smimsr = g_ring0 && vendor[1] == 0x756e6547u /* "Genu" */ && fam == 6 && model >= 0x1a;
+    }
     calibrate();
     cpuid4(1, 0, r);
     out("=== SMITIME %s === ring %u, TSC %u MHz, APIC ID %u\n", mode == 1 ? "INIT" : mode == 2 ? "ROM" : "",

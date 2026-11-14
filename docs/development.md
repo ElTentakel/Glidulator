@@ -8,7 +8,7 @@ arms)*
 | Target | Compiler | Notes |
 |---|---|---|
 | `core/` + tests | GCC (Linux) | ASan/UBSan, `libpng-dev` for the test harness only |
-| `glide2x.dll`, `glide3x.dll` | mingw-w64 `i686-w64-mingw32-gcc` | `-D_WIN32_WINNT=0x0400`, libgcc static; `glide3x.dll` with `-DGLIDULATOR_GLIDE3` |
+| `glide2x.dll`, `glide3x.dll`, `glide.dll` | mingw-w64 `i686-w64-mingw32-gcc` | `-D_WIN32_WINNT=0x0400`, libgcc static; `glide3x.dll` with `-DGLIDULATOR_GLIDE3`; `glide.dll` = `glide2x.dll` objects + `core/glide211_abi.c` |
 | `GLIDE2X.OVL` | Open Watcom v2 in `/opt/watcom` | Pinned snapshot `2026-09-01-Build`. Warnings are errors (`-we`). |
 | `glide_dos_test.exe` | DJGPP in `/opt/djgpp` | Build check of the core with a third compiler. |
 | AP trampoline | `gcc -m32` + `objcopy` + `xxd` | Generates `build/ovl/ap_tramp.h`. |
@@ -27,12 +27,12 @@ Watcom specifics the code relies on:
 ## Build targets
 
 ```
-make test             # Linux build, Glide test harness (tests 1-22), video and MTRR unit tests
+make test             # Linux build, Glide test harness (tests 1-28), video, MTRR and video filter unit tests
 make ovl              # build/ovl/GLIDE2X.OVL          release
 make ovl-trace        # build/ovl_trace/GLIDE2X.OVL    -dGLIDULATOR_TRACE
 make ovl-debug        # build/ovl_debug/GLIDE2X.OVL    -dGLIDULATOR_TRACE -dGLIDULATOR_DEBUG
 make ovl-all          # all three
-make win98            # build/win98/glide2x.dll (also win98-trace, win98-debug) and the VxD
+make win98            # build/win98/glide2x.dll and glide.dll (also win98-trace, win98-debug) and the VxD
 make vxd              # build/win98vxd/GLSMP.VXD only
 make win98-all        # all three
 make win98-g3         # build/win98_g3/glide3x.dll (also win98-g3-trace, win98-g3-debug)
@@ -53,11 +53,12 @@ changes, so delete the directory when switching defines by hand.
 ## Release package
 
 The version number lives in `core/include/glidulator/version.h` only.
-`make dist` runs `make test`, builds all nine binaries (OVL, `glide2x.dll`
-and `glide3x.dll` in three variants each) and writes:
+`make dist` runs `make test`, builds all twelve binaries (OVL,
+`glide2x.dll`, `glide3x.dll` and `glide.dll` in three variants each) and
+writes:
 
 - `build/dist/glidulator-<version>.zip`: `BIN\`, `BIN\TRACE\`,
-  `BIN\DEBUG\` (OVL, both DLLs and `GLSMP.VXD` each, DLLs stripped), the example
+  `BIN\DEBUG\` (OVL, the three DLLs and `GLSMP.VXD` each, DLLs stripped), the example
   `GLIDULAT.CFG` and the texts from `package/`, `docs/` and `CHANGES.md`
   with CRLF line ends and 8.3 names, so the folder can be copied to a DOS
   machine as is.
@@ -111,6 +112,7 @@ in DOSBox. It verifies the picture by screenshot, plus texture memory,
 | `tools/compat/run_nature.sh`, `run_demo.sh <name>` | DOS demos in headless DOSBox with the debug OVL; screenshots, `GLIDULAT.LOG`, frame captures. Demos are downloaded to `build/compat/` and never committed. |
 | `tools/compat/play_nature.sh`, `play_demo.sh` | The same, in a visible window. |
 | `tools/compat/run_windemo.sh <dir> <exe> [n] [gap] [keys]` | Windows programs under 32-bit Wine on Xvfb. Virtual desktop, Windows 98 version, key/mouse scripting, screenshots. `TRACE=1`/`DEBUG=1` select the DLL variant; `WINEDEBUG` is passed through (e.g. `+relay`). |
+| `tools/compat/fastcheck.sh [--lod-dither]` | The fast renderer (`GLIDULATOR_RENDERER=fast`) against the exact C path over every recording in `build/compat` (`glide_replay --compare-fast`, needs `make replay32`): deviation per frame and the same picture with every thread count. |
 | `tools/compat/get_glquake.sh` | Fetches Quake 1.06 shareware and GLQuake 0.97 with the 3dfx MiniGL. Installers are unpacked with `tools/compat/unpack/` (SZDD, LHA `-lh5-`), never executed. |
 | `tools/dosbox_test/session.py` | Drives DOSBox with scripted keys (XTest) and screenshots. |
 | `tools/dosvm/run.sh` | Nature in QEMU on FreeDOS with selectable CPU count/topology, XMS driver and OVL. The only way to test multi-core DOS rendering without hardware (TCG timing is not meaningful). Driver `sbemu` runs it under SBEMU with JEMMEX/HDPMI32i and an AC97 card (`SBEMUARGS`, `WAV=1` records the card output); `vdpmi` needs VME and fails under TCG (use `QEMU_OPTS="-enable-kvm -cpu host -smp 4"`). `R3PROBE=AP NATUREONLY=0` runs `r3probe.c` instead: what the DPMI host lets a ring-3 client see (CR0/CR3/CR4, page walk, local APIC, SSE) and a guarded start of the other cores on the host's address space. |

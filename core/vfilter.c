@@ -24,12 +24,15 @@
 #include "glidulator/renderer.h"
 
 #include "glide_internal.h"
+#include "vfilter_kern.h"
 
 static uint8_t (*g_tab)[256][256]; /* [0] red, [1] green, [2] blue */
 static uint32_t *g_out;
 /* scratch per drawer (glide_mt_parallel: workers + main core <= GLIDE_MT_MAX) */
 static uint8_t   g_line[GLIDE_MT_MAX][2][2048 * 3];
 static int       g_on;
+static int       g_cap[3];  /* threshold per channel (r, g, b) */
+static int       g_sse2;    /* vf_pass_sse2 usable */
 
 static int hexval(int c) {
     if (c >= '0' && c <= '9')
@@ -39,22 +42,6 @@ static int hexval(int c) {
     if (c >= 'A' && c <= 'F')
         return c - 'A' + 10;
     return -1;
-}
-
-/* Table as voodoo_generate_filter_v1 builds it: difference limited to
- * +-cap, result = pixel + difference/2 (the condition there is always
- * true). */
-static void make_table(uint8_t t[256][256], int cap) {
-    for (int g = 0; g < 256; g++)
-        for (int h = 0; h < 256; h++) {
-            int d = h - g;
-            if (d > cap)
-                d = cap;
-            if (d < -cap)
-                d = -cap;
-            int v = g + d / 2;
-            t[g][h] = (uint8_t) (v < 0 ? 0 : v > 255 ? 255 : v);
-        }
 }
 
 int glide_vfilter_open(int width, int height) {
@@ -84,9 +71,12 @@ int glide_vfilter_open(int width, int height) {
         glide_vfilter_close();
         return 0;
     }
-    make_table(g_tab[0], (int) ((thr >> 16) & 0xff));
-    make_table(g_tab[1], (int) ((thr >> 8) & 0xff));
-    make_table(g_tab[2], (int) (thr & 0xff));
+    g_cap[0] = (int) ((thr >> 16) & 0xff);
+    g_cap[1] = (int) ((thr >> 8) & 0xff);
+    g_cap[2] = (int) (thr & 0xff);
+    for (int c = 0; c < 3; c++)
+        vf_make_table(g_tab[c], g_cap[c]);
+    g_sse2 = VF_HAVE_SSE2 && (platform_cpu_features() & PLATFORM_CPU_SSE2);
     g_on = 1;
     return 1;
 }
@@ -103,22 +93,30 @@ int glide_vfilter_enabled(void) {
     return g_on;
 }
 
+/* One pass: dst[i] = step(g[i], h[i]) (vfilter_kern.h) */
+static void filter_pass(uint8_t *dst, const uint8_t *g, const uint8_t *h, int n, int ch) {
+#if VF_HAVE_SSE2
+    if (g_sse2) {
+        vf_pass_sse2(dst, g, h, n, g_cap[ch]);
+        return;
+    }
+#endif
+    vf_pass_table(dst, g, h, n, g_tab[ch]);
+}
+
 /* One channel of one line, the four passes of 86Box's filter (fil/fil3
  * there): three with the left neighbour, one with the right. a holds the
  * channel's pixels on entry and the result on exit; b is scratch. As in
  * 86Box the first pixel keeps its value in the left passes and the last
- * pixel keeps its value after the second pass. t[pixel][neighbour]. */
-static void filter_channel(uint8_t *a, uint8_t *b, uint8_t (*t)[256], int w) {
+ * pixel keeps its value after the second pass. Every pass reads one buffer
+ * and writes the other, so the pixels of a pass are independent. */
+static void filter_channel(uint8_t *a, uint8_t *b, int ch, int w) {
     b[0] = a[0];
-    for (int x = 1; x < w; x++)
-        b[x] = t[a[x]][a[x - 1]];
-    for (int x = 1; x < w; x++)
-        a[x] = t[b[x]][b[x - 1]];
+    filter_pass(b + 1, a + 1, a, w - 1, ch);
+    filter_pass(a + 1, b + 1, b, w - 1, ch);
     uint8_t keep = a[w - 1];
-    for (int x = 1; x < w; x++)
-        b[x] = t[a[x]][a[x - 1]];
-    for (int x = 0; x < w - 1; x++)
-        a[x] = t[b[x]][b[x + 1]];
+    filter_pass(b + 1, a + 1, a, w - 1, ch);
+    filter_pass(a, b, b + 1, w - 1, ch);
     a[w - 1] = keep;
 }
 
@@ -128,17 +126,21 @@ static void filter_channel(uint8_t *a, uint8_t *b, uint8_t (*t)[256], int w) {
  * i7-4790 (Watcom). Bit-identical to it. */
 static void filter_line(const uint16_t *src, uint32_t *dst, int w, int drawer) {
     uint8_t *r = g_line[drawer][0], *g = r + 2048, *b = g + 2048, *tmp = g_line[drawer][1];
-    for (int x = 0; x < w; x++) {
-        unsigned p = src[x];
-        r[x]       = (uint8_t) (((p >> 11) & 31) << 3);
-        g[x]       = (uint8_t) (((p >> 5) & 63) << 2);
-        b[x]       = (uint8_t) ((p & 31) << 3);
-    }
-    filter_channel(r, tmp, g_tab[0], w);
-    filter_channel(g, tmp, g_tab[1], w);
-    filter_channel(b, tmp, g_tab[2], w);
-    for (int x = 0; x < w; x++)
-        dst[x] = (uint32_t) r[x] << 16 | (uint32_t) g[x] << 8 | b[x];
+#if VF_HAVE_SSE2
+    if (g_sse2)
+        vf_split565_sse2(src, r, g, b, w);
+    else
+#endif
+        vf_split565(src, r, g, b, w);
+    filter_channel(r, tmp, 0, w);
+    filter_channel(g, tmp, 1, w);
+    filter_channel(b, tmp, 2, w);
+#if VF_HAVE_SSE2
+    if (g_sse2)
+        vf_join_sse2(r, g, b, dst, w);
+    else
+#endif
+        vf_join(r, g, b, dst, w);
 }
 
 /* Lines of one drawer (glide_mt_parallel; the lines are independent) */

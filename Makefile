@@ -25,12 +25,13 @@ ALL_HEADERS := $(wildcard core/*.h core/include/glidulator/*.h core/rasterizer/*
 # file.
 RASTER_CFLAGS := -std=c99 -Wall -g $(SAN) -fno-sanitize=shift
 
-CORE_SRCS   := core/glide_abi.c core/glide_modes.c core/glide_tex.c core/glide_lfb.c core/glide_sst.c core/glide_gutex.c core/glide_fog.c core/glide_stubs.c core/trace.c core/capture.c core/config.c core/renderer.c core/osd.c core/render_mt.c core/fsaa.c core/vfilter.c core/crt.c core/splash.c core/splash_orig.c core/screenshot.c
+CORE_SRCS   := core/glide_abi.c core/glide_modes.c core/glide_tex.c core/glide_lfb.c core/glide_sst.c core/glide_gutex.c core/glide_fog.c core/glide_stubs.c core/trace.c core/capture.c core/config.c core/renderer.c core/osd.c core/render_mt.c core/fsaa.c core/vfilter.c core/vfilter_kern.c core/crt.c core/splash.c core/splash_orig.c core/screenshot.c
 RASTER_SRCS := core/rasterizer/vid_voodoo_render.c core/rasterizer/vid_voodoo_texture.c core/rasterizer/vid_voodoo_tables.c
 LINUX_SRCS  := platform/linux/platform_linux.c
 TEST_SRCS   := targets/glide_test_linux/main.c
 
 BUILD := build/linux
+BUILD_G3TEST := build/linux_g3
 OBJS  := $(patsubst %.c,$(BUILD)/%.o,$(CORE_SRCS) $(RASTER_SRCS) $(LINUX_SRCS) $(TEST_SRCS))
 
 MINGW_CC             := i686-w64-mingw32-gcc
@@ -49,10 +50,28 @@ WIN98_OBJS   := $(patsubst %.c,$(BUILD_WIN98)/%.o,$(CORE_SRCS) $(RASTER_SRCS) $(
 
 all: test
 
-test: $(BUILD)/glide_test_linux $(BUILD)/video_test $(BUILD)/mtrr_test
+test: $(BUILD)/glide_test_linux $(BUILD_G3TEST)/glide3_test_linux $(BUILD)/video_test $(BUILD)/mtrr_test $(BUILD)/vfilter_test
 	$(BUILD)/glide_test_linux
+	$(BUILD_G3TEST)/glide3_test_linux
 	$(BUILD)/video_test
 	$(BUILD)/mtrr_test
+	$(BUILD)/vfilter_test
+
+# Glide 3 test (targets/glide3_test_linux): the core built as for
+# glide3x.dll (-DGLIDULATOR_GLIDE3, Glide 2 functions as g2_*) plus
+# core/glide3_abi.c; redraws golden scenes through the Glide 3 API.
+G3TEST_OBJS  := $(patsubst %.c,$(BUILD_G3TEST)/%.o,$(CORE_SRCS) $(RASTER_SRCS) $(LINUX_SRCS) core/glide3_abi.c targets/glide3_test_linux/main.c)
+
+$(BUILD_G3TEST)/glide3_test_linux: $(G3TEST_OBJS)
+	$(CC) $(G3TEST_OBJS) -o $@ $(LDFLAGS)
+
+$(BUILD_G3TEST)/core/rasterizer/%.o: core/rasterizer/%.c
+	mkdir -p $(dir $@)
+	$(CC) $(RASTER_CFLAGS) -DGLIDULATOR_GLIDE3 $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD_G3TEST)/%.o: %.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DGLIDULATOR_GLIDE3 $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # Replay of frames captured by the debug variant (core/capture.c,
 # targets/glide_replay): debugging with real software on Linux.
@@ -89,6 +108,12 @@ VIDEO_TEST_OBJS := $(BUILD)/platform/dos_ovl/video.o $(BUILD)/tests/video_test.o
 # MTRR planner for write-combining (platform/common/mtrr_plan.c; OVL and DLL)
 MTRR_TEST_OBJS := $(BUILD)/platform/common/mtrr_plan.o $(BUILD)/tests/mtrr_test.o
 
+# Voodoo video filter: SSE2 kernel against the table (core/vfilter_kern.c)
+VFILTER_TEST_OBJS := $(BUILD)/core/vfilter_kern.o $(BUILD)/tests/vfilter_test.o
+
+$(BUILD)/vfilter_test: $(VFILTER_TEST_OBJS)
+	$(CC) $(VFILTER_TEST_OBJS) -o $@ $(SAN)
+
 $(BUILD)/mtrr_test: $(MTRR_TEST_OBJS)
 	$(CC) $(MTRR_TEST_OBJS) -o $@ $(SAN)
 
@@ -106,7 +131,7 @@ $(BUILD)/%.o: %.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
-win98: $(BUILD_WIN98)/glide2x.dll $(VXD)
+win98: $(BUILD_WIN98)/glide2x.dll $(BUILD_WIN98)/glide.dll $(VXD)
 
 # Exports only through the generated .def (3dfx names, see gen_glide2x.py);
 # libgcc static because a fresh Windows 98 has no libgcc_s_dw2-1.dll.
@@ -125,6 +150,18 @@ $(BUILD_WIN98)/core/rasterizer/%.o: core/rasterizer/%.c
 $(BUILD_WIN98)/%.o: %.c
 	mkdir -p $(dir $@)
 	$(MINGW_CC) $(MINGW_CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# glide.dll (Glide 2.1.1, the first Voodoo games): the glide2x.dll core
+# plus core/glide211_abi.c; exports from the generated glide.def
+# (tools/abi/gen_glide211.py). Built with every glide2x.dll variant.
+G211_OBJS := $(WIN98_OBJS) $(BUILD_WIN98)/core/glide211_abi.o
+
+$(BUILD_WIN98)/glide.dll: $(G211_OBJS) $(BUILD_WIN98)/glide_rc.o targets/glide_dll/glide.def
+	$(MINGW_CC) $(G211_OBJS) $(BUILD_WIN98)/glide_rc.o targets/glide_dll/glide.def -shared -static-libgcc -o $@ -Wl,--out-implib,$(BUILD_WIN98)/glide.lib -lgdi32
+
+$(BUILD_WIN98)/glide_rc.o: targets/glide_dll/glide2x.rc core/include/glidulator/version.h
+	mkdir -p $(dir $@)
+	$(MINGW_WINDRES) $(WIN98_DEFS) -DGLIDULATOR_GLIDE211 -Icore/include $< -o $@
 
 # glide3x.dll (Glide 3.x): the same core with -DGLIDULATOR_GLIDE3 (Glide 2
 # functions renamed to g2_*, see glide2x.h) plus core/glide3_abi.c; exports
@@ -352,6 +389,9 @@ dist: test ovl-all win98-all win98-g3-all
 	$(MINGW_STRIP) -o $(DIST)/BIN/glide3x.dll build/win98_g3/glide3x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/TRACE/glide3x.dll build/win98_g3_trace/glide3x.dll
 	$(MINGW_STRIP) -o $(DIST)/BIN/DEBUG/glide3x.dll build/win98_g3_debug/glide3x.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/glide.dll build/win98/glide.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/TRACE/glide.dll build/win98_trace/glide.dll
+	$(MINGW_STRIP) -o $(DIST)/BIN/DEBUG/glide.dll build/win98_debug/glide.dll
 	for d in BIN BIN/TRACE BIN/DEBUG; do cp $(VXD) $(DIST)/$$d/GLSMP.VXD; done
 	cp build/ovl/GLIDE2X.map build/win98/glide2x.dll $(DIST_SYM)/
 	cp build/ovl_trace/GLIDE2X.map build/win98_trace/glide2x.dll $(DIST_SYM)/TRACE/
@@ -359,6 +399,9 @@ dist: test ovl-all win98-all win98-g3-all
 	cp build/win98_g3/glide3x.dll $(DIST_SYM)/
 	cp build/win98_g3_trace/glide3x.dll $(DIST_SYM)/TRACE/
 	cp build/win98_g3_debug/glide3x.dll $(DIST_SYM)/DEBUG/
+	cp build/win98/glide.dll $(DIST_SYM)/
+	cp build/win98_trace/glide.dll $(DIST_SYM)/TRACE/
+	cp build/win98_debug/glide.dll $(DIST_SYM)/DEBUG/
 	sed -e "s/@VERSION@/$(VERSION)/" package/README.TXT | $(CRLF) > $(DIST)/README.TXT
 	$(CRLF) package/GLIDULAT.CFG > $(DIST)/GLIDULAT.CFG
 	$(CRLF) COPYING > $(DIST)/COPYING.TXT

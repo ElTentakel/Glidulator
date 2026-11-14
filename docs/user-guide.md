@@ -11,8 +11,9 @@ before calling technical support; there is no technical support.
 | File | Purpose |
 |---|---|
 | `BIN\GLIDE2X.OVL` | Glide 2.x for DOS games (DOS/4G LE DLL, loaded by the game) |
-| `BIN\glide2x.dll` | Glide 2.x for Windows 9x games |
+| `BIN\glide2x.dll` | Glide 2.x for Windows 9x and NT games |
 | `BIN\glide3x.dll` | Glide 3.x for Windows games with a Glide 3 renderer |
+| `BIN\glide.dll` | Glide 2.1.1 for the first Voodoo Graphics games under Windows |
 | `BIN\GLSMP.VXD` | Multi-core rendering under Windows 95/98/ME: loaded by `glide2x.dll` while the game runs (optional) |
 | `BIN\TRACE\`, `BIN\DEBUG\` | The same files in the Trace and Debug variants |
 | `GLIDULAT.CFG` | Example settings file: every setting, commented out, with its default |
@@ -70,6 +71,23 @@ Glidulator opens its own full-screen output window above the game's window
 and switches the display mode for the duration of the game (see
 `GLIDULATOR_DISPLAY`).
 
+### Windows NT 3.51/4.0
+
+Installation is the same as under Windows 95/98/ME; `GLSMP.VXD` is not
+needed there (Windows NT does not load VxDs). Windows NT schedules every
+CPU core itself, so the render workers are ordinary threads (at most
+four with `GLIDULATOR_THREADS=auto`). Two things are missing compared
+with Windows 9x: write-combining (NT does not let the DLL reach ring 0;
+`Write-Combining: off` in the Trace log) and, on Windows NT 4.0 and
+earlier, the JIT: these versions do not save the SSE registers, so the
+DLL detects this at start-up and renders with the C path (slower, same
+picture).
+
+Windows NT 3.51 does not come with `msvcrt.dll`, which the Glidulator DLLs
+need; Windows then refuses to start the game ("msvcrt.dll could not be
+found"). Copy an `msvcrt.dll` next to the game, for example from Windows
+NT 4.0 or Windows 98 (`\WINDOWS\SYSTEM`); nothing has to be installed.
+
 Windows 95/98/ME schedule one CPU core only. With `GLSMP.VXD` next to the
 DLL, Glidulator starts the other cores itself and runs its render workers
 there, as under DOS: one worker per physical core (Hyper-Threading siblings
@@ -93,6 +111,14 @@ Which file a game loads is usually visible in its directory (an existing
 `glide3x.dll` or `glide2x.dll`); when in doubt, copy both. Some games ship
 both renderers and need a particular one: Unreal-engine games (Unreal,
 Unreal Tournament, Undying) use `glide2x.dll`.
+
+**Glide 2.1.1 games.** The first Voodoo Graphics games (1996) load
+`glide.dll`: Scorched Planet, Pandemonium!, CyberGladiators, MechWarrior 2
+(3Dfx edition). Replace the `glide.dll` in the game directory with ours;
+if the game also ships `sst1init.dll`, leave it, it is no longer used.
+Games of that time switch to the VGA card's picture for their videos and
+menus (`grSstPassthruMode`); Glidulator then hides its picture so the
+game's window shows, mouse pointer included.
 
 ## 3. Settings
 
@@ -146,6 +172,7 @@ glidulator_fsaa = 2      anything after the value is ignored
 | Voodoo Rush version of a game quits after the intro | `GLIDULATOR_BOARD=rush` |
 | Faster lightmapped DOS games | `GLIDULATOR_TMUS=2` (Windows: already the default) |
 | A Windows game draws wrongly with two texture units | `GLIDULATOR_TMUS=1` (please report it) |
+| More speed on slow CPUs, picture not quite exact | `GLIDULATOR_RENDERER=fast` |
 | Rule out multi-core or JIT problems | `GLIDULATOR_THREADS=1`, `GLIDULATOR_RENDERER=c` |
 | Brighter or darker picture | `SST_GAMMA=1.0` (darker) ... `1.7` (brighter) |
 
@@ -156,7 +183,7 @@ the Windows DLL.
 
 | Setting | Values | Default | Effect |
 |---|---|---|---|
-| `GLIDULATOR_RENDERER` | `auto`, `c`, `jit` | `auto` | Pixel pipeline. `auto` picks the JIT when the CPU has SSE2 and the system saves SSE registers, otherwise the C path. Both give identical pictures. |
+| `GLIDULATOR_RENDERER` | `auto`, `c`, `jit`, `fast` | `auto` | Pixel pipeline. `auto` picks the JIT when the CPU has SSE2 and the system saves SSE registers, otherwise the C path. Both give identical pictures. `fast` is the JIT with perspective-correct texturing computed exactly only every 16 pixels: 20-30 % faster drawing in Quake-engine games (Half-Life, GLQuake), little gain in games with many small mipmapped textures. Textures may shift by a fraction of a texel; hardly visible, but no longer exactly the Voodoo picture. Without SSE2 `fast` uses the C path. |
 | `GLIDULATOR_THREADS` | `auto`, `1` ... `8` | `auto` | Render workers on other cores. `auto` = cores - 1, at most 8 under DOS and Windows 95/98/ME, at most 4 under Windows NT/2000/XP and Wine (with two cores one worker); the game's core draws part of the lines too while it would otherwise wait; `1` = render on the game's core (under Windows 9x the VxD is then not loaded). Windows 95/98/ME need `GLSMP.VXD` next to the DLL. |
 | `GLIDULATOR_SMP` | `auto`, `ring0`, `paging`, `flat`, `off` | `auto` | DOS only: how the OVL starts the other cores. `auto` uses plain DOS/4GW (ring 0) as before and, under a DPMI host such as HDPMI32i or VDPMI (SBEMU), detects which of the two host paths fits. `ring0` = only the plain-DOS path, `paging` = host with page tables (HDPMI32i), `flat` = host that maps memory 1:1 (VDPMI), `off` = one core. Under Windows 95/98/ME only `off` matters: it keeps `GLSMP.VXD` unloaded (one core); every other value uses it when present. |
 | `GLIDULATOR_HT` | `0`, `1` | `0` | Experimental, DOS and Windows 95/98/ME (`GLSMP.VXD`): `1` lets Hyper-Threading siblings run render workers too, as if every logical processor were a core of its own. Real cores are still used first, the sibling of the game's core last. The default (one worker per physical core, the game's core drawing too) is faster with 2 cores + HT; with 4 or more cores `1` is about as fast and can help in games with much drawing (GLQuake under Windows 98, 4 cores + HT: +11 %). Windows NT/2000/XP always use every logical processor. |
@@ -185,7 +212,7 @@ bit-identical to plain rendering.
 | `GLIDULATOR_FSAA` | `0`, `2`, `4`, `auto` | `0` | Full-scene anti-aliasing like the Voodoo 5: every triangle is drawn 2 or 4 times with sub-pixel offsets (rotated grid) and averaged. It costs about 2x or 4x the render time. Menus, HUDs and videos drawn by the game directly into the framebuffer stay sharp. `auto` switches between off, 2x and 4x to stay at 60 frames per second. |
 | `GLIDULATOR_AA_POST` | `0`, `1` | `0` | Cheap edge smoothing after rendering: pixels at depth discontinuities are blended with their neighbour. It costs about 1-2 ms per frame. It does not smooth alpha-tested edges, and pixels the game wrote directly are left untouched. |
 | `GLIDULATOR_LOD_DITHER` | `auto`, `0`, `1` | `auto` | Mipmap dithering, as the Voodoo board does it: the edge between two mipmap levels becomes a 4x4 dither pattern instead of a visible band. `auto` dithers when the game asks for it (`GR_MIPMAP_NEAREST_DITHER` with `GR_HINT_ALLOW_MIPMAP_DITHER`), `1` always (like the "mipmap dithering" option of 3dfx's drivers), `0` never. Perspective-corrected textures only. |
-| `GLIDULATOR_VOODOO_FILTER` | `0`, `1`, `RRGGBB` | `0` | The video output filter of the Voodoo Graphics ("Voodoo look"). Neighbouring pixels that differ only by dithering are averaged, edges stay. `1` uses 3dfx's default threshold `080408`; a hex value sets your own. Output then uses 24/32-bit screen modes. It costs about 4-5 ms per frame at 640x480. |
+| `GLIDULATOR_VOODOO_FILTER` | `0`, `1`, `RRGGBB` | `0` | The video output filter of the Voodoo Graphics ("Voodoo look"). Neighbouring pixels that differ only by dithering are averaged, edges stay. `1` uses 3dfx's default threshold `080408`; a hex value sets your own. Output then uses 24/32-bit screen modes. It costs about 3.5 ms per frame at 640x480 on a Core 2 Duo under Windows (computed with SSE2), more under DOS. |
 
 The options can be combined. The on-screen display is not filtered.
 
@@ -221,7 +248,7 @@ The Trace and Debug variants append to `GLIDULAT.LOG` in the current
 directory. Typical lines:
 
 ```
-Glidulator GL-1 0.9.6 (trace)
+Glidulator GL-1 0.9.7 (trace)
 Renderer: jit, Threads 3, CPU: MMX SSE SSE2
 Video mode: 800 x 600
 Frame: 60.1 fps, game+render 12345 us, output 2400 us per frame

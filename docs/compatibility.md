@@ -52,6 +52,17 @@ it next to the game's renderer DLL, like `glide2x.dll`.
 | Diablo II (Blizzard, 2000), shareware v1.04 | game demo | **runs** (HW) | Put `glide3x.dll` next to `Diablo II.exe` and start it with `-3dfx`. Menus (800x600), character creation and the Rogue Encampment (rain, shadows, lighting). Core i7-4790 under Windows 98 with `GLSMP.VXD`: the game's own frame limit (25 fps in town, up to 50 fps), four cores. |
 | Slave Zero (Infogrames, 1999), demo | game demo | **runs** (HW) | Set `Renderer DLL=3dfx.dll` in `SZoptions.ini`. Intro, menus and the first mission; Core i7-4790 under Windows 98 with `GLSMP.VXD`: about 57 fps in the mission, 640x480. Under Wine the demo crashes while loading the level, also with its Direct3D renderer. |
 
+## Windows, Glide 2.1.1 (`glide.dll`)
+
+Part of the package since 0.9.7.
+
+| Title | Type | Status | Notes |
+|---|---|---|---|
+| Scorched Planet (Criterion, 1996), 3Dfx demo `spvoodoo.zip` | game demo | **runs** (HW) | The archive holds the installed game in `SPLANET\`; start `splanetw.exe`. Its renderer `rwdlvood.dll` draws the cockpit over the 3D view through the LFB, through the pixel pipeline with an alpha test. Both the original `rwdlvood.dll` and the patched one made for dgVoodoo/nGlide work. Core i7-4790 under Windows 98 with `GLSMP.VXD`: 84-97 fps in the first mission. Quit with Esc. |
+| Pandemonium! (Crystal Dynamics, 1996), demo, 3Dfx version | game demo | **runs** (HW) | The demo's setup installs `Pandy3.exe` as `pandy.exe` with `full3.cnf` as `resource.cnf` and writes `HOME` under `HKLM\SOFTWARE\Crystal Dynamics\Pandemonium\1.00`. Title menu and the first level at 30 fps (the game's own limit). Esc switches to its Windows menu (VGA passthrough) and back; quit through Game > Exit. |
+| CyberGladiators (Sierra, 1996), demo | game demo | **runs** (HW) | Title pages and intro videos through the VGA passthrough, fights at 290-450 fps on a Core i7-4790. The demo starts at a low detail level (black background, untextured floor); `]` raises it (arena backdrop, stone floor). Quit with Alt+F4. |
+| MechWarrior 2: 31st Century Combat, 3Dfx edition | game | not tested | No demo of the 3Dfx edition exists. |
+
 ## Not supported
 
 - **Statically linked Glide**: the Voodoo Graphics versions of Tomb
@@ -62,11 +73,14 @@ it next to the game's renderer DLL, like `glide2x.dll`.
   only; the shareware/demo data is not accepted.
 - **Direct3D games**: Glidulator replaces Glide only.
 
-## Known issues in 0.9.6
+## Known issues in 0.9.7
 
 This is a preview release. Known problems, in the order we intend to
 look at them:
 
+- **Glide 2.1.1** (`glide.dll`):
+  `guFbReadRegion`/`guFbWriteRegion` do nothing (no tested game uses
+  them).
 - **Glide 3** (`glide3x.dll`): clip coordinates
   (`grCoordinateSpace(GR_CLIP_COORDS)` with `grViewport`/`grDepthRange`)
   are not supported yet, `grLoadGammaTable` and stipple patterns are
@@ -94,10 +108,21 @@ look at them:
   on one tester's machine (HIMEM + EMM386, DOS/4GW directly). Without
   EMM386, or with HDPMI32i, it loads. Cause not known yet; please report
   the error text and a trace log if you see it.
+- **Windows NT 3.51/4.0** are supported (reported working by a user;
+  checked in a virtual machine with `glide2x.dll` and `glide.dll`): the
+  DLL renders without write-combining and without the JIT (these versions
+  do not save SSE registers), so it is slower than Windows 98 on the same
+  PC. Windows NT 3.51 needs an `msvcrt.dll` next to the game (it has
+  none). Pandemonium! stopped at a dialog of its own in the virtual
+  machine (16-colour display); not checked with a real display driver.
 - **Windows 95/98/ME** run Glide games on one CPU core unless `GLSMP.VXD`
   lies next to `glide2x.dll`. Multi-core under Windows 9x is tested in a
   virtual machine and on two real PCs (Core i7-4770T, Core i7-4790), so
   far Intel only; if a game misbehaves with it, try `GLIDULATOR_SMP=off`.
+- **Clive Barker's Undying** fell back to one core once after "New
+  Game" on a Core i7-4790 under Windows 98 (`1/4 CORES · SMP OFF` in the
+  OSD, about 15 fps); two later runs used all four cores. Not reproduced
+  yet; if you see it, please send a trace log.
 - **Windows 98, game ended through the task list**: write-combining
   stays on until the next reboot (the next start reports `already on`).
   Harmless; quit games normally.
